@@ -224,6 +224,26 @@ document.getElementById('retryLocationBtn')?.addEventListener('click', () => {
   startLocationTracking();
 });
 
+// Snap PC location to phone location for testing 0m
+document.getElementById('syncLocationBtn')?.addEventListener('click', () => {
+  const friends = Object.values(STATE.friends);
+  const friendWithLoc = friends.find(f => f.location && f.location.lat != null);
+
+  if (friendWithLoc) {
+    const loc = {
+      lat: friendWithLoc.location.lat + 0.000001,
+      lng: friendWithLoc.location.lng + 0.000001,
+      type: 'gps',
+      accuracy: 2,
+      label: 'GPS • Synced for testing (±2m)'
+    };
+    onMyLocationUpdate(loc);
+    showToast('🎯 PC location snapped to phone GPS! Distance is now 0m!', 'success', 4000);
+  } else {
+    showToast('⚠️ Waiting for your phone to send its GPS coordinates first…', 'warn', 4000);
+  }
+});
+
 // ────────────────────────────────────────────────────────────
 // Map
 // ────────────────────────────────────────────────────────────
