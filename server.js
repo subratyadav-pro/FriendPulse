@@ -172,7 +172,7 @@ wss.on('connection', (ws) => {
 
       rooms[currentRoom][userId] = {
         ws,
-        data: { id: userId, name: userName, roomCode: currentRoom, lastUpdated: Date.now() }
+        data: { id: userId, name: userName, roomCode: currentRoom, lastUpdated: Date.now(), deviceType: msg.deviceType || 'mobile' }
       };
 
       // Send back active room members only
@@ -183,7 +183,7 @@ wss.on('connection', (ws) => {
       ws.send(JSON.stringify({ type: 'room_members', members: activeMembers }));
       ws.send(JSON.stringify({ type: 'ROOM_STATE', members: activeMembers }));
 
-      broadcastToRoom(currentRoom, userId, { type: 'joined', userId, name: userName });
+      broadcastToRoom(currentRoom, userId, { type: 'joined', userId, name: userName, deviceType: msg.deviceType || 'mobile' });
       console.log(`[+] ${userName} (${userId}) → room ${currentRoom} (${Object.keys(rooms[currentRoom]).length} active)`);
     }
 

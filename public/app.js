@@ -352,6 +352,7 @@ function connectWs(roomCode, userId, name) {
       roomCode,
       userId,
       name,
+      deviceType: 'web',
       userData: { name, id: userId }
     }));
 
