@@ -174,8 +174,22 @@ function onMyLocationUpdate(loc) {
     }
   }
 
-  // Send location to server
+  // Refresh UI so friend distances are computed and shown immediately
+  renderFriendsList();
+  renderBottomStrip();
+
+  // Send location to server (both modern and legacy protocols)
   if (STATE.ws && STATE.ws.readyState === WebSocket.OPEN) {
+    STATE.ws.send(JSON.stringify({
+      type: 'location',
+      room: STATE.roomCode,
+      userId: STATE.myId,
+      name: STATE.myName,
+      lat: loc.lat,
+      lng: loc.lng,
+      locationType: loc.type,
+      accuracy: loc.accuracy || null,
+    }));
     STATE.ws.send(JSON.stringify({
       type: 'UPDATE_LOCATION',
       location: {
