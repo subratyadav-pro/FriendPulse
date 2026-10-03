@@ -461,6 +461,14 @@ function handleServerMessage(msg) {
             accuracy: STATE.myLocation.accuracy || null,
           }));
         }
+        // Ping new peer to immediately request their location
+        if (STATE.ws?.readyState === WebSocket.OPEN) {
+          STATE.ws.send(JSON.stringify({
+            type: 'ping',
+            targetId: msg.userId,
+            room: STATE.roomCode,
+          }));
+        }
       }
       break;
     }
