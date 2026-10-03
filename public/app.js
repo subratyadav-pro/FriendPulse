@@ -225,7 +225,7 @@ document.getElementById('retryLocationBtn')?.addEventListener('click', () => {
 });
 
 // Snap PC location to phone location for testing 0m
-document.getElementById('syncLocationBtn')?.addEventListener('click', () => {
+const doSnapLocation = () => {
   const friends = Object.values(STATE.friends);
   const friendWithLoc = friends.find(f => f.location && f.location.lat != null);
 
@@ -242,7 +242,10 @@ document.getElementById('syncLocationBtn')?.addEventListener('click', () => {
   } else {
     showToast('⚠️ Waiting for your phone to send its GPS coordinates first…', 'warn', 4000);
   }
-});
+};
+
+document.getElementById('syncLocationBtn')?.addEventListener('click', doSnapLocation);
+document.getElementById('snapGpsBtn')?.addEventListener('click', doSnapLocation);
 
 // ────────────────────────────────────────────────────────────
 // Map
