@@ -316,22 +316,26 @@ function initMap() {
 
 function setMapTheme(theme) {
   STATE.mapTheme = theme;
+  const mapEl = document.getElementById('map');
+  if (mapEl) {
+    if (theme === 'dark') {
+      mapEl.classList.add('dark-map');
+    } else {
+      mapEl.classList.remove('dark-map');
+    }
+  }
+
   if (!STATE.map) return;
 
-  const urls = {
-    dark: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-    light: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-  };
-  
   if (STATE.tileLayer) {
     try { STATE.map.removeLayer(STATE.tileLayer); } catch (e) {}
     STATE.tileLayer = null;
   }
-  
-  STATE.tileLayer = L.tileLayer(urls[theme] || urls.dark, { 
-    subdomains: 'abcd', 
-    maxZoom: 20,
-    attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+
+  // 100% free OpenStreetMap tile server — no API key, token, or signup required
+  STATE.tileLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>'
   }).addTo(STATE.map);
 }
 

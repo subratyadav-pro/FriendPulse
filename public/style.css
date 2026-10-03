@@ -273,6 +273,10 @@ a { text-decoration: none; }
   background: #0b1120;
 }
 
+#map.dark-map .leaflet-tile-pane {
+  filter: brightness(0.75) invert(1) contrast(2.2) hue-rotate(205deg) saturate(0.35) brightness(0.85);
+}
+
 /* FABs */
 .fab {
   position: absolute;
