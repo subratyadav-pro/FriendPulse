@@ -107,8 +107,15 @@ async function getIPLocation() {
 function startLocationTracking() {
   updateMyLocationCard('detecting', 'Getting your GPS…');
 
+  // Immediately get IP location so distances can be calculated right away
+  getIPLocation().then(ipLoc => {
+    if (ipLoc && (!STATE.myLocation || STATE.myLocation.type !== 'gps')) {
+      onMyLocationUpdate(ipLoc);
+    }
+  });
+
   if (navigator.geolocation) {
-    // One-shot first
+    // Try GPS
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         const loc = {
@@ -122,20 +129,18 @@ function startLocationTracking() {
       },
       async (err) => {
         console.warn('GPS denied/failed:', err.message);
-        // Fallback to IP geolocation
         const ipLoc = await getIPLocation();
         if (ipLoc) {
           onMyLocationUpdate(ipLoc);
-          showToast('📡 GPS unavailable – using approximate IP location (city level)', 'warn', 5000);
+          showToast('📡 Using approximate IP location for PC/device', 'info', 4000);
         } else {
           updateMyLocationCard('none', 'Location unavailable');
-          showToast('⚠️ Could not determine location. Ask your friend to check their GPS settings.', 'error', 6000);
         }
       },
-      { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
+      { enableHighAccuracy: true, timeout: 6000, maximumAge: 10000 }
     );
 
-    // Then watch continuously
+    // Watch continuously for GPS movements
     STATE.locationWatchId = navigator.geolocation.watchPosition(
       (pos) => {
         onMyLocationUpdate({
@@ -147,13 +152,11 @@ function startLocationTracking() {
         });
       },
       (err) => {
-        // Watch errors are expected (user can lose GPS signal) — ignore silently
         console.warn('Watch error:', err.message);
       },
       { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 }
     );
   } else {
-    // Browser doesn't support geolocation — go straight to IP
     getIPLocation().then(ipLoc => {
       if (ipLoc) onMyLocationUpdate(ipLoc);
       else updateMyLocationCard('none', 'Location not supported by browser');
