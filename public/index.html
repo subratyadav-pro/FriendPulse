@@ -11,7 +11,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="style.css?v=1.9.0">
+  <link rel="stylesheet" href="style.css?v=2.0.0">
 </head>
 <body>
 
@@ -92,15 +92,63 @@
   <div id="tab-map" class="tab-panel active">
     <div id="map"></div>
 
-    <!-- Recenter FAB -->
-    <button id="recenterBtn" class="fab" title="Recenter on My Location">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="2"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>
-    </button>
+    <!-- Live GPS & Speed HUD (Top Left) -->
+    <div class="map-hud" id="mapHud">
+      <div class="hud-pill" id="hudGpsPill">
+        <span class="hud-dot"></span>
+        <span id="hudGpsText">GPS: Detecting…</span>
+      </div>
+      <div class="hud-pill hud-speed" id="hudSpeedPill">
+        <span>⚡</span>
+        <span id="hudSpeedText">0 km/h</span>
+      </div>
+    </div>
 
-    <!-- Map Theme Toggle -->
-    <button id="mapThemeBtn" class="fab fab-secondary" title="Toggle Map Theme">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-    </button>
+    <!-- Map Floating Action Controls (Right side stack) -->
+    <div class="map-fab-stack">
+      <!-- Recenter on Me -->
+      <button id="recenterBtn" class="fab" title="Recenter on My Location">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="2"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>
+      </button>
+
+      <!-- Fit All Friends -->
+      <button id="fitAllBtn" class="fab" title="Fit All Friends on Screen">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+      </button>
+
+      <!-- Toggle Distance Lines -->
+      <button id="toggleLinesBtn" class="fab active" title="Toggle Distance Radar Lines">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><line x1="8.5" y1="8.5" x2="15.5" y2="15.5" stroke-dasharray="3,3"/></svg>
+      </button>
+
+      <!-- Map Layer Switcher Toggle -->
+      <button id="mapThemeBtn" class="fab" title="Map Layers & Views">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+      </button>
+    </div>
+
+    <!-- Map Layers Selector Popup Menu -->
+    <div id="mapLayersMenu" class="map-layers-menu hidden">
+      <div class="layers-title">Map Views</div>
+      <div class="layers-options">
+        <button class="layer-opt active" data-layer="dark">
+          <span class="layer-icon">🌌</span>
+          <span>Dark Radar</span>
+        </button>
+        <button class="layer-opt" data-layer="satellite">
+          <span class="layer-icon">🛰️</span>
+          <span>Satellite</span>
+        </button>
+        <button class="layer-opt" data-layer="street">
+          <span class="layer-icon">🗺️</span>
+          <span>Street Map</span>
+        </button>
+        <button class="layer-opt" data-layer="topo">
+          <span class="layer-icon">🏔️</span>
+          <span>Topographic</span>
+        </button>
+      </div>
+    </div>
 
     <!-- Friends Bottom Slider -->
     <div class="bottom-friend-strip" id="bottomFriendStrip">
@@ -265,6 +313,6 @@
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=1.9.0"></script>
+<script src="app.js?v=2.0.0"></script>
 </body>
 </html>

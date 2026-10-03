@@ -19,8 +19,11 @@ const STATE = {
   friends: {},
   map: null,
   myMarker: null,
+  accuracyCircle: null,
   tileLayer: null,
   mapTheme: 'dark',
+  showDistanceLines: true,
+  distanceLines: {},
   locationWatchId: null,
   sosHoldTimer: null,
   wsReconnectTimer: null,
@@ -123,6 +126,7 @@ function startLocationTracking() {
           lng: pos.coords.longitude,
           type: 'gps',
           accuracy: Math.round(pos.coords.accuracy),
+          speed: pos.coords.speed,
           label: `GPS • ±${Math.round(pos.coords.accuracy)}m accuracy`
         };
         onMyLocationUpdate(loc);
@@ -148,6 +152,7 @@ function startLocationTracking() {
           lng: pos.coords.longitude,
           type: 'gps',
           accuracy: Math.round(pos.coords.accuracy),
+          speed: pos.coords.speed,
           label: `GPS • ±${Math.round(pos.coords.accuracy)}m accuracy`
         });
       },
@@ -167,6 +172,7 @@ function startLocationTracking() {
 function onMyLocationUpdate(loc) {
   STATE.myLocation = loc;
   updateMyLocationCard(loc.type, loc.label || `${loc.type.toUpperCase()} location`);
+  updateMapHud(loc.speed, loc.accuracy, loc.type === 'gps');
 
   // Update my map marker & center map on user
   if (STATE.map) {
@@ -175,6 +181,8 @@ function onMyLocationUpdate(loc) {
     } else {
       addMyMarker(loc.lat, loc.lng);
     }
+    updateAccuracyCircle(loc.lat, loc.lng, loc.accuracy);
+    drawDistanceLines();
     STATE.map.flyTo([loc.lat, loc.lng], 15, { duration: 0.8 });
   }
 
@@ -317,6 +325,12 @@ function initMap() {
 function setMapTheme(theme) {
   STATE.mapTheme = theme;
   const mapEl = document.getElementById('map');
+  
+  // Highlight active layer button in menu
+  document.querySelectorAll('.layer-opt').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-layer') === theme);
+  });
+
   if (mapEl) {
     if (theme === 'dark') {
       mapEl.classList.add('dark-map');
@@ -332,11 +346,52 @@ function setMapTheme(theme) {
     STATE.tileLayer = null;
   }
 
-  // 100% free OpenStreetMap tile server — no API key, token, or signup required
-  STATE.tileLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  const layerUrls = {
+    dark: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    street: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    satellite: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    topo: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png'
+  };
+
+  const attributions = {
+    dark: '&copy; OpenStreetMap',
+    street: '&copy; OpenStreetMap contributors',
+    satellite: '&copy; Esri World Imagery',
+    topo: '&copy; OpenTopoMap'
+  };
+
+  const url = layerUrls[theme] || layerUrls.dark;
+  const attr = attributions[theme] || attributions.dark;
+
+  STATE.tileLayer = L.tileLayer(url, {
     maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>'
+    subdomains: theme === 'topo' ? 'abc' : '',
+    attribution: attr
   }).addTo(STATE.map);
+}
+
+function updateAccuracyCircle(lat, lng, accuracy) {
+  if (!STATE.map) return;
+  if (!accuracy || isNaN(accuracy)) {
+    if (STATE.accuracyCircle) {
+      STATE.map.removeLayer(STATE.accuracyCircle);
+      STATE.accuracyCircle = null;
+    }
+    return;
+  }
+
+  if (STATE.accuracyCircle) {
+    STATE.accuracyCircle.setLatLng([lat, lng]).setRadius(accuracy);
+  } else {
+    STATE.accuracyCircle = L.circle([lat, lng], {
+      radius: accuracy,
+      color: '#6366f1',
+      fillColor: '#6366f1',
+      fillOpacity: 0.12,
+      weight: 1.5,
+      dashArray: '4,4'
+    }).addTo(STATE.map);
+  }
 }
 
 function addMyMarker(lat, lng) {
@@ -361,6 +416,9 @@ function addMyMarker(lat, lng) {
     STATE.myMarker = L.marker([numLat, numLng], { icon, zIndexOffset: 1000 }).addTo(STATE.map);
     STATE.map.setView([numLat, numLng], 15);
   }
+
+  updateAccuracyCircle(numLat, numLng, STATE.myLocation?.accuracy);
+  drawDistanceLines();
 }
 
 function addOrUpdateFriendMarker(userId, friend) {
@@ -391,6 +449,72 @@ function addOrUpdateFriendMarker(userId, friend) {
       .addTo(STATE.map)
       .on('click', () => openFriendDetail(userId));
   }
+
+  drawDistanceLines();
+}
+
+function drawDistanceLines() {
+  if (!STATE.map) return;
+
+  // Clear existing lines if disabled
+  if (!STATE.showDistanceLines || !STATE.myLocation || STATE.myLocation.lat == null) {
+    Object.values(STATE.distanceLines).forEach(item => {
+      if (item.line) STATE.map.removeLayer(item.line);
+      if (item.label) STATE.map.removeLayer(item.label);
+    });
+    STATE.distanceLines = {};
+    return;
+  }
+
+  const myLat = Number(STATE.myLocation.lat);
+  const myLng = Number(STATE.myLocation.lng);
+
+  Object.entries(STATE.friends).forEach(([uid, f]) => {
+    if (!f.location || f.location.lat == null) {
+      if (STATE.distanceLines[uid]) {
+        if (STATE.distanceLines[uid].line) STATE.map.removeLayer(STATE.distanceLines[uid].line);
+        if (STATE.distanceLines[uid].label) STATE.map.removeLayer(STATE.distanceLines[uid].label);
+        delete STATE.distanceLines[uid];
+      }
+      return;
+    }
+
+    const fLat = Number(f.location.lat);
+    const fLng = Number(f.location.lng);
+    const midLat = (myLat + fLat) / 2;
+    const midLng = (myLng + fLng) / 2;
+    const distText = formatDist(distanceMeters(myLat, myLng, fLat, fLng));
+
+    const linePoints = [[myLat, myLng], [fLat, fLng]];
+
+    if (STATE.distanceLines[uid]) {
+      STATE.distanceLines[uid].line.setLatLngs(linePoints);
+      STATE.distanceLines[uid].label.setLatLng([midLat, midLng]);
+      const el = STATE.distanceLines[uid].label.getElement();
+      if (el) el.innerHTML = `<div class="distance-pill-label">⚡ ${distText}</div>`;
+    } else {
+      const line = L.polyline(linePoints, {
+        color: '#818cf8',
+        weight: 2,
+        dashArray: '6, 8',
+        opacity: 0.8
+      }).addTo(STATE.map);
+
+      const labelIcon = L.divIcon({
+        className: '',
+        html: `<div class="distance-pill-label">⚡ ${distText}</div>`,
+        iconSize: [60, 20],
+        iconAnchor: [30, 10]
+      });
+
+      const label = L.marker([midLat, midLng], {
+        icon: labelIcon,
+        interactive: false
+      }).addTo(STATE.map);
+
+      STATE.distanceLines[uid] = { line, label };
+    }
+  });
 }
 
 function removeFriendMarker(userId) {
@@ -401,11 +525,62 @@ function removeFriendMarker(userId) {
     }
     f.marker = null;
   }
+  if (STATE.distanceLines[userId]) {
+    if (STATE.distanceLines[userId].line) STATE.map.removeLayer(STATE.distanceLines[userId].line);
+    if (STATE.distanceLines[userId].label) STATE.map.removeLayer(STATE.distanceLines[userId].label);
+    delete STATE.distanceLines[userId];
+  }
 }
 
 function recenterMap() {
   if (STATE.myLocation && STATE.myLocation.lat != null && STATE.map) {
     STATE.map.flyTo([Number(STATE.myLocation.lat), Number(STATE.myLocation.lng)], 16, { duration: 0.8 });
+  }
+}
+
+function fitAllFriends() {
+  if (!STATE.map) return;
+  const points = [];
+  if (STATE.myLocation && STATE.myLocation.lat != null) {
+    points.push([Number(STATE.myLocation.lat), Number(STATE.myLocation.lng)]);
+  }
+  Object.values(STATE.friends).forEach(f => {
+    if (f.location && f.location.lat != null) {
+      points.push([Number(f.location.lat), Number(f.location.lng)]);
+    }
+  });
+
+  if (points.length === 0) {
+    showToast('No active locations to fit yet', 'info');
+    return;
+  }
+  if (points.length === 1) {
+    STATE.map.flyTo(points[0], 16, { duration: 0.8 });
+    return;
+  }
+
+  const bounds = L.latLngBounds(points);
+  STATE.map.fitBounds(bounds, { padding: [60, 60], maxZoom: 17, duration: 0.8 });
+  showToast(`🔍 Showing all ${points.length} locations on radar`, 'info');
+}
+
+function updateMapHud(speed, accuracy, isGps) {
+  const gpsText = document.getElementById('hudGpsText');
+  const speedText = document.getElementById('hudSpeedText');
+  if (gpsText) {
+    if (accuracy) {
+      gpsText.textContent = `${isGps ? 'GPS' : 'IP'}: ±${accuracy}m`;
+    } else {
+      gpsText.textContent = 'Locating…';
+    }
+  }
+  if (speedText) {
+    if (speed != null && !isNaN(speed) && speed > 0) {
+      const kmh = Math.round(speed * 3.6);
+      speedText.textContent = `${kmh} km/h`;
+    } else {
+      speedText.textContent = '0 km/h';
+    }
   }
 }
 
@@ -1151,15 +1326,45 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('shareRoomBtn')?.addEventListener('click', shareRoom);
   document.getElementById('shareRoomLinkBtn')?.addEventListener('click', shareRoom);
-  document.getElementById('copyRoomCodeBtn')?.addEventListener('click', () => {
-    navigator.clipboard.writeText(STATE.roomCode).then(() => showToast('📋 Room code copied!', 'success'));
-  });
-  document.getElementById('shareFromMapBtn')?.addEventListener('click', shareRoom);
+  // ── Map Controls ──────────────────────────────────────────
+  document.getElementById('recenterBtn')?.addEventListener('click', recenterMap);
+  
+  document.getElementById('fitAllBtn')?.addEventListener('click', fitAllFriends);
 
-  document.getElementById('recenterBtn').addEventListener('click', recenterMap);
-  document.getElementById('mapThemeBtn').addEventListener('click', () => {
-    setMapTheme(STATE.mapTheme === 'dark' ? 'light' : 'dark');
-  });
+  const toggleLinesBtn = document.getElementById('toggleLinesBtn');
+  if (toggleLinesBtn) {
+    toggleLinesBtn.addEventListener('click', () => {
+      STATE.showDistanceLines = !STATE.showDistanceLines;
+      toggleLinesBtn.classList.toggle('active', STATE.showDistanceLines);
+      drawDistanceLines();
+      showToast(STATE.showDistanceLines ? '📏 Distance radar lines ON' : '📏 Distance radar lines OFF', 'info', 2000);
+    });
+  }
+
+  const mapThemeBtn = document.getElementById('mapThemeBtn');
+  const layersMenu = document.getElementById('mapLayersMenu');
+  if (mapThemeBtn && layersMenu) {
+    mapThemeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      layersMenu.classList.toggle('hidden');
+    });
+
+    document.querySelectorAll('.layer-opt').forEach(opt => {
+      opt.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const layer = opt.getAttribute('data-layer');
+        setMapTheme(layer);
+        layersMenu.classList.add('hidden');
+        showToast(`🗺️ View switched to ${opt.textContent.trim()}`, 'success', 2000);
+      });
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!layersMenu.contains(e.target) && e.target !== mapThemeBtn) {
+        layersMenu.classList.add('hidden');
+      }
+    });
+  }
 
   // Tab switching
   document.querySelectorAll('.nav-btn[data-tab]').forEach(btn => {
