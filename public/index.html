@@ -94,22 +94,14 @@
     <div id="map"></div>
 
     <!-- Recenter FAB -->
-    <button id="recenterBtn" class="fab">
+    <button id="recenterBtn" class="fab" title="Recenter on My Location">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="2"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>
     </button>
 
     <!-- Map Theme Toggle -->
-    <button id="mapThemeBtn" class="fab fab-secondary">
+    <button id="mapThemeBtn" class="fab fab-secondary" title="Toggle Map Theme">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
     </button>
-
-    <!-- Empty State when no friends online -->
-    <div id="mapEmptyState" class="map-empty-state hidden">
-      <div class="map-empty-icon">👥</div>
-      <h3>No friends online yet</h3>
-      <p>Share your room code and invite friends to join. They'll appear here when they connect.</p>
-      <button id="shareFromMapBtn" class="btn-outline-small">📤 Share Room Code</button>
-    </div>
 
     <!-- Friends Bottom Slider -->
     <div class="bottom-friend-strip" id="bottomFriendStrip">
@@ -274,6 +266,6 @@
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-<script src="app.js?v=1.4.0"></script>
+<script src="app.js?v=1.5.0"></script>
 </body>
 </html>

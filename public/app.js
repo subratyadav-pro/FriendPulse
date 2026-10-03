@@ -168,13 +168,14 @@ function onMyLocationUpdate(loc) {
   STATE.myLocation = loc;
   updateMyLocationCard(loc.type, loc.label || `${loc.type.toUpperCase()} location`);
 
-  // Update my map marker
+  // Update my map marker & center map on user
   if (STATE.map) {
     if (STATE.myMarker) {
       STATE.myMarker.setLatLng([loc.lat, loc.lng]);
     } else {
       addMyMarker(loc.lat, loc.lng);
     }
+    STATE.map.flyTo([loc.lat, loc.lng], 15, { duration: 0.8 });
   }
 
   // Refresh UI so friend distances are computed and shown immediately
@@ -268,12 +269,32 @@ document.getElementById('snapGpsBtn')?.addEventListener('click', doSnapLocation)
 // Map
 // ────────────────────────────────────────────────────────────
 function initMap() {
+  if (STATE.map) {
+    try { STATE.map.remove(); } catch (e) {}
+    STATE.map = null;
+    STATE.myMarker = null;
+  }
+  const defaultCenter = STATE.myLocation ? [STATE.myLocation.lat, STATE.myLocation.lng] : [20.5937, 78.9629];
+  const defaultZoom = STATE.myLocation ? 15 : 5;
+
   STATE.map = L.map('map', {
     zoomControl: false,
     attributionControl: false,
-  }).setView([20.5937, 78.9629], 5); // Default India center
+  }).setView(defaultCenter, defaultZoom);
 
   setMapTheme('dark');
+
+  // Trigger leaflet size refresh so map tiles render immediately
+  setTimeout(() => {
+    STATE.map?.invalidateSize();
+  }, 100);
+  setTimeout(() => {
+    STATE.map?.invalidateSize();
+  }, 500);
+
+  if (STATE.myLocation) {
+    addMyMarker(STATE.myLocation.lat, STATE.myLocation.lng);
+  }
 }
 
 function setMapTheme(theme) {
@@ -438,7 +459,6 @@ function handleServerMessage(msg) {
       });
       renderFriendsList();
       renderBottomStrip();
-      toggleMapEmptyState();
       break;
     }
 
@@ -447,7 +467,6 @@ function handleServerMessage(msg) {
         updateFriend(msg.userId, { id: msg.userId, name: msg.name || 'Friend' });
         renderFriendsList();
         renderBottomStrip();
-        toggleMapEmptyState();
         // Respond with our location so newly joined friend gets our data immediately
         if (STATE.myLocation && STATE.ws?.readyState === WebSocket.OPEN) {
           STATE.ws.send(JSON.stringify({
@@ -485,7 +504,6 @@ function handleServerMessage(msg) {
         });
         renderFriendsList();
         renderBottomStrip();
-        toggleMapEmptyState();
       }
       break;
     }
@@ -502,7 +520,6 @@ function handleServerMessage(msg) {
         });
         renderFriendsList();
         renderBottomStrip();
-        toggleMapEmptyState();
       }
       break;
 
@@ -514,7 +531,6 @@ function handleServerMessage(msg) {
         delete STATE.friends[msg.userId];
         renderFriendsList();
         renderBottomStrip();
-        toggleMapEmptyState();
         showToast(`👋 ${leftName} left the room`, 'info');
       }
       break;
@@ -660,12 +676,6 @@ function renderBottomStrip() {
         <div class="acc-dot ${accClass}"></div>
       </div>`;
   }).join('');
-}
-
-function toggleMapEmptyState() {
-  const empty = document.getElementById('mapEmptyState');
-  const hasAny = Object.keys(STATE.friends).length > 0;
-  empty.classList.toggle('hidden', hasAny);
 }
 
 // ────────────────────────────────────────────────────────────
