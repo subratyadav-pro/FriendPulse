@@ -322,17 +322,27 @@ function connectWs(roomCode, userId, name) {
 
   ws.onopen = () => {
     STATE.wsReconnectAttempts = 0;
+    // Send join message compatible with both protocols
     ws.send(JSON.stringify({
-      type: 'JOIN_ROOM',
+      type: 'join',
+      room: roomCode,
       roomCode,
       userId,
+      name,
       userData: { name, id: userId }
     }));
 
     // Send current location immediately
     if (STATE.myLocation) {
       ws.send(JSON.stringify({
-        type: 'UPDATE_LOCATION',
+        type: 'location',
+        room: roomCode,
+        userId,
+        name,
+        lat: STATE.myLocation.lat,
+        lng: STATE.myLocation.lng,
+        locationType: STATE.myLocation.type,
+        accuracy: STATE.myLocation.accuracy || null,
         location: {
           lat: STATE.myLocation.lat,
           lng: STATE.myLocation.lng,
@@ -356,7 +366,6 @@ function connectWs(roomCode, userId, name) {
 
   ws.onclose = () => {
     updateConnectionStatus('disconnected');
-    // Auto-reconnect with exponential backoff
     if (STATE.wsReconnectAttempts < 5) {
       const delay = Math.min(1000 * 2 ** STATE.wsReconnectAttempts, 15000);
       STATE.wsReconnectAttempts++;
@@ -373,40 +382,82 @@ function connectWs(roomCode, userId, name) {
 
 function handleServerMessage(msg) {
   switch (msg.type) {
+    case 'join':
     case 'JOINED':
       updateConnectionStatus('connected');
-      showToast(`✅ Connected to room ${msg.roomCode}`, 'success');
+      showToast(`✅ Connected to room ${msg.roomCode || STATE.roomCode}`, 'success');
       break;
 
-    case 'ROOM_STATE':
-      // Full member list from server
-      msg.members.forEach(member => {
-        if (member.id === STATE.myId) return; // skip self
+    case 'room_members':
+    case 'ROOM_STATE': {
+      const members = msg.members || [];
+      members.forEach(member => {
+        if (member.id === STATE.myId) return;
         updateFriend(member.id, member);
-      });
-      // Remove any friends no longer in the room
-      const serverIds = new Set(msg.members.map(m => m.id));
-      Object.keys(STATE.friends).forEach(uid => {
-        if (!serverIds.has(uid)) {
-          removeFriendMarker(uid);
-          delete STATE.friends[uid];
-        }
       });
       renderFriendsList();
       renderBottomStrip();
       toggleMapEmptyState();
       break;
+    }
 
-    case 'FRIEND_LOCATION_UPDATE':
-      if (STATE.friends[msg.userId]) {
-        STATE.friends[msg.userId].location = { ...msg.location };
-        STATE.friends[msg.userId].lastSeen = Date.now();
-        addOrUpdateFriendMarker(msg.userId, STATE.friends[msg.userId]);
+    case 'joined': {
+      if (msg.userId && msg.userId !== STATE.myId) {
+        updateFriend(msg.userId, { id: msg.userId, name: msg.name || 'Friend' });
         renderFriendsList();
         renderBottomStrip();
+        toggleMapEmptyState();
+        // Respond with our location so newly joined friend gets our data immediately
+        if (STATE.myLocation && STATE.ws?.readyState === WebSocket.OPEN) {
+          STATE.ws.send(JSON.stringify({
+            type: 'location',
+            room: STATE.roomCode,
+            userId: STATE.myId,
+            name: STATE.myName,
+            lat: STATE.myLocation.lat,
+            lng: STATE.myLocation.lng,
+            locationType: STATE.myLocation.type,
+            accuracy: STATE.myLocation.accuracy || null,
+          }));
+        }
+      }
+      break;
+    }
+
+    case 'location': {
+      if (msg.userId && msg.userId !== STATE.myId) {
+        updateFriend(msg.userId, {
+          id: msg.userId,
+          name: msg.name || 'Friend',
+          lat: msg.lat,
+          lng: msg.lng,
+          locType: msg.locationType || 'gps',
+          accuracy: msg.accuracy
+        });
+        renderFriendsList();
+        renderBottomStrip();
+        toggleMapEmptyState();
+      }
+      break;
+    }
+
+    case 'FRIEND_LOCATION_UPDATE':
+      if (msg.userId && msg.userId !== STATE.myId) {
+        updateFriend(msg.userId, {
+          id: msg.userId,
+          name: msg.name || 'Friend',
+          lat: msg.location?.lat,
+          lng: msg.location?.lng,
+          locType: msg.location?.locType || 'gps',
+          accuracy: msg.location?.accuracy
+        });
+        renderFriendsList();
+        renderBottomStrip();
+        toggleMapEmptyState();
       }
       break;
 
+    case 'left':
     case 'FRIEND_LEFT':
       if (STATE.friends[msg.userId]) {
         const leftName = STATE.friends[msg.userId].name;
@@ -419,23 +470,24 @@ function handleServerMessage(msg) {
       }
       break;
 
+    case 'sos':
     case 'SOS_ALERT':
       showSosAlert(msg);
       logSosActivity(msg);
       break;
 
+    case 'ping':
     case 'PING_YOU':
-      // Someone pinged us — re-broadcast our location immediately
-      if (STATE.myLocation && STATE.ws.readyState === WebSocket.OPEN) {
+      if (STATE.myLocation && STATE.ws?.readyState === WebSocket.OPEN) {
         STATE.ws.send(JSON.stringify({
-          type: 'UPDATE_LOCATION',
-          location: {
-            lat: STATE.myLocation.lat,
-            lng: STATE.myLocation.lng,
-            locType: STATE.myLocation.type,
-            accuracy: STATE.myLocation.accuracy || null,
-            lastUpdated: Date.now()
-          }
+          type: 'location',
+          room: STATE.roomCode,
+          userId: STATE.myId,
+          name: STATE.myName,
+          lat: STATE.myLocation.lat,
+          lng: STATE.myLocation.lng,
+          locationType: STATE.myLocation.type,
+          accuracy: STATE.myLocation.accuracy || null,
         }));
       }
       break;
