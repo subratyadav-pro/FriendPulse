@@ -567,6 +567,25 @@ function updateConnectionStatus(status) {
 }
 
 // ────────────────────────────────────────────────────────────
+function calculateFriendDistance(f) {
+  if (!f || !f.location || f.location.lat == null) return 'No location';
+  if (!STATE.myLocation || STATE.myLocation.lat == null) {
+    // Proactively fetch IP location if we don't have our own position yet
+    getIPLocation().then(ipLoc => {
+      if (ipLoc && !STATE.myLocation) onMyLocationUpdate(ipLoc);
+    });
+    return '📍 Locating…';
+  }
+  const myLat = Number(STATE.myLocation.lat);
+  const myLng = Number(STATE.myLocation.lng);
+  const fLat = Number(f.location.lat);
+  const fLng = Number(f.location.lng);
+  if (isNaN(myLat) || isNaN(myLng) || isNaN(fLat) || isNaN(fLng)) return '—';
+  const d = distanceMeters(myLat, myLng, fLat, fLng);
+  return formatDist(d);
+}
+
+// ────────────────────────────────────────────────────────────
 // UI Render
 // ────────────────────────────────────────────────────────────
 function renderFriendsList() {
@@ -587,9 +606,7 @@ function renderFriendsList() {
 
   container.innerHTML = Object.entries(STATE.friends).map(([uid, f]) => {
     const hasLoc = f.location && f.location.lat != null;
-    const dist = hasLoc && STATE.myLocation
-      ? formatDist(distanceMeters(STATE.myLocation.lat, STATE.myLocation.lng, f.location.lat, f.location.lng))
-      : null;
+    const dist = calculateFriendDistance(f);
     const locType = f.location?.locType || 'unknown';
     const locLabel = locType === 'gps' ? '📍 GPS' : locType === 'ip' ? '🌐 IP (city-level)' : '❓ No location';
     const locClass = locType === 'gps' ? 'fc-gps' : locType === 'ip' ? 'fc-ip' : 'fc-unknown';
@@ -601,7 +618,7 @@ function renderFriendsList() {
         <div class="fc-avatar" style="background:${color}">${initial(f.name)}</div>
         <div class="fc-info">
           <h4>${escHtml(f.name)}</h4>
-          ${dist ? `<div class="fc-dist">📏 ${dist} away${ago ? ' · ' + ago : ''}</div>` : `<div class="fc-dist">${ago || 'Connected'}</div>`}
+          <div class="fc-dist">📏 ${dist}${ago ? ' · ' + ago : ''}</div>
           <div class="fc-loc-type ${locClass}">${locLabel}</div>
         </div>
         ${hasLoc ? `
@@ -620,9 +637,7 @@ function renderBottomStrip() {
 
   strip.innerHTML = entries.map(([uid, f]) => {
     const hasLoc = f.location && f.location.lat != null;
-    const dist = hasLoc && STATE.myLocation
-      ? formatDist(distanceMeters(STATE.myLocation.lat, STATE.myLocation.lng, f.location.lat, f.location.lng))
-      : '—';
+    const dist = calculateFriendDistance(f);
     const color = avatarColor(uid);
     const isGps = f.location?.locType === 'gps';
     const accClass = !hasLoc ? 'acc-none' : isGps ? 'acc-gps' : 'acc-ip';
@@ -653,15 +668,13 @@ function openFriendDetail(uid) {
   if (!f) return;
 
   const hasLoc = f.location && f.location.lat != null;
-  const dist = hasLoc && STATE.myLocation
-    ? formatDist(distanceMeters(STATE.myLocation.lat, STATE.myLocation.lng, f.location.lat, f.location.lng))
-    : '—';
+  const dist = calculateFriendDistance(f);
   const locType = f.location?.locType || 'unknown';
   const locLabel = locType === 'gps' ? '📍 GPS (high accuracy)' : locType === 'ip' ? '🌐 IP-based (city level)' : 'No location';
   const locBadgeClass = locType === 'gps' ? 'fc-gps' : locType === 'ip' ? 'fc-ip' : 'fc-unknown';
   const color = avatarColor(uid);
   const coordText = hasLoc
-    ? `${f.location.lat.toFixed(5)}, ${f.location.lng.toFixed(5)}`
+    ? `${Number(f.location.lat).toFixed(5)}, ${Number(f.location.lng).toFixed(5)}`
     : 'Not available';
   const accText = f.location?.accuracy ? `±${f.location.accuracy}m` : f.location?.city ? f.location.city : '—';
   const ago = f.lastSeen ? timeAgo(f.lastSeen) : '—';
