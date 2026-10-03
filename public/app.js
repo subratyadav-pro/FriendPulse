@@ -269,45 +269,78 @@ document.getElementById('snapGpsBtn')?.addEventListener('click', doSnapLocation)
 // Map
 // ────────────────────────────────────────────────────────────
 function initMap() {
+  if (typeof L === 'undefined') {
+    console.error('Leaflet is not available on window');
+    return;
+  }
   if (STATE.map) {
     try { STATE.map.remove(); } catch (e) {}
     STATE.map = null;
     STATE.myMarker = null;
   }
-  const defaultCenter = STATE.myLocation ? [STATE.myLocation.lat, STATE.myLocation.lng] : [20.5937, 78.9629];
+  const defaultCenter = STATE.myLocation && STATE.myLocation.lat != null 
+    ? [Number(STATE.myLocation.lat), Number(STATE.myLocation.lng)] 
+    : [20.5937, 78.9629];
   const defaultZoom = STATE.myLocation ? 15 : 5;
 
-  STATE.map = L.map('map', {
-    zoomControl: false,
-    attributionControl: false,
-  }).setView(defaultCenter, defaultZoom);
+  try {
+    STATE.map = L.map('map', {
+      zoomControl: false,
+      attributionControl: false,
+    }).setView(defaultCenter, defaultZoom);
 
-  setMapTheme('dark');
+    setMapTheme(STATE.mapTheme || 'dark');
 
-  // Trigger leaflet size refresh so map tiles render immediately
-  setTimeout(() => {
-    STATE.map?.invalidateSize();
-  }, 100);
-  setTimeout(() => {
-    STATE.map?.invalidateSize();
-  }, 500);
+    // Force map to layout and fetch tiles across multiple ticks
+    [50, 150, 350, 700, 1200].forEach(delay => {
+      setTimeout(() => {
+        if (STATE.map) {
+          STATE.map.invalidateSize();
+        }
+      }, delay);
+    });
 
-  if (STATE.myLocation) {
-    addMyMarker(STATE.myLocation.lat, STATE.myLocation.lng);
+    // Add own marker if we already have location
+    if (STATE.myLocation && STATE.myLocation.lat != null) {
+      addMyMarker(STATE.myLocation.lat, STATE.myLocation.lng);
+    }
+
+    // Add existing friend markers
+    Object.entries(STATE.friends).forEach(([uid, friend]) => {
+      addOrUpdateFriendMarker(uid, friend);
+    });
+  } catch (err) {
+    console.error('Failed to initialize Leaflet map:', err);
   }
 }
 
 function setMapTheme(theme) {
   STATE.mapTheme = theme;
+  if (!STATE.map) return;
+
   const urls = {
     dark: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
     light: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
   };
-  if (STATE.tileLayer) STATE.map.removeLayer(STATE.tileLayer);
-  STATE.tileLayer = L.tileLayer(urls[theme], { subdomains: 'abcd', maxZoom: 20 }).addTo(STATE.map);
+  
+  if (STATE.tileLayer) {
+    try { STATE.map.removeLayer(STATE.tileLayer); } catch (e) {}
+    STATE.tileLayer = null;
+  }
+  
+  STATE.tileLayer = L.tileLayer(urls[theme] || urls.dark, { 
+    subdomains: 'abcd', 
+    maxZoom: 20,
+    attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+  }).addTo(STATE.map);
 }
 
 function addMyMarker(lat, lng) {
+  if (!STATE.map || lat == null || lng == null) return;
+  const numLat = Number(lat);
+  const numLng = Number(lng);
+  if (isNaN(numLat) || isNaN(numLng)) return;
+
   const icon = L.divIcon({
     className: '',
     iconSize: [44, 66],
@@ -317,16 +350,20 @@ function addMyMarker(lat, lng) {
       <div class="my-label">YOU</div>
     </div>`
   });
+
   if (STATE.myMarker) {
-    STATE.myMarker.setLatLng([lat, lng]).setIcon(icon);
+    STATE.myMarker.setLatLng([numLat, numLng]).setIcon(icon);
   } else {
-    STATE.myMarker = L.marker([lat, lng], { icon, zIndexOffset: 1000 }).addTo(STATE.map);
-    STATE.map.setView([lat, lng], 15);
+    STATE.myMarker = L.marker([numLat, numLng], { icon, zIndexOffset: 1000 }).addTo(STATE.map);
+    STATE.map.setView([numLat, numLng], 15);
   }
 }
 
 function addOrUpdateFriendMarker(userId, friend) {
-  if (!friend.location || !friend.location.lat) return;
+  if (!STATE.map || !friend || !friend.location || friend.location.lat == null || friend.location.lng == null) return;
+  const numLat = Number(friend.location.lat);
+  const numLng = Number(friend.location.lng);
+  if (isNaN(numLat) || isNaN(numLng)) return;
 
   const color = avatarColor(userId);
   const isGps = friend.location.locType === 'gps';
@@ -344,9 +381,9 @@ function addOrUpdateFriendMarker(userId, friend) {
   });
 
   if (friend.marker) {
-    friend.marker.setLatLng([friend.location.lat, friend.location.lng]).setIcon(icon);
+    friend.marker.setLatLng([numLat, numLng]).setIcon(icon);
   } else {
-    friend.marker = L.marker([friend.location.lat, friend.location.lng], { icon })
+    friend.marker = L.marker([numLat, numLng], { icon })
       .addTo(STATE.map)
       .on('click', () => openFriendDetail(userId));
   }
@@ -355,14 +392,16 @@ function addOrUpdateFriendMarker(userId, friend) {
 function removeFriendMarker(userId) {
   const f = STATE.friends[userId];
   if (f && f.marker) {
-    STATE.map.removeLayer(f.marker);
+    if (STATE.map) {
+      try { STATE.map.removeLayer(f.marker); } catch (e) {}
+    }
     f.marker = null;
   }
 }
 
 function recenterMap() {
-  if (STATE.myLocation) {
-    STATE.map.flyTo([STATE.myLocation.lat, STATE.myLocation.lng], 16, { duration: 0.8 });
+  if (STATE.myLocation && STATE.myLocation.lat != null && STATE.map) {
+    STATE.map.flyTo([Number(STATE.myLocation.lat), Number(STATE.myLocation.lng)], 16, { duration: 0.8 });
   }
 }
 

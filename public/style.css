@@ -237,14 +237,20 @@ a { text-decoration: none; }
   overflow: hidden;
   min-height: 0;
 }
-.tab-panel.active { display: flex; flex-direction: column; }
+.tab-panel.active { 
+  display: flex; 
+  flex-direction: column; 
+}
 
 #tab-map.active {
-  display: block;
-  position: relative;
+  display: flex;
+  flex-direction: column;
   flex: 1;
+  position: relative;
   width: 100%;
   height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .tab-scroll-content {
@@ -257,11 +263,14 @@ a { text-decoration: none; }
 /* Map */
 #map {
   position: absolute;
-  top: 0; left: 0; right: 0; bottom: 0;
-  z-index: 1;
-  background: #111827;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   width: 100% !important;
   height: 100% !important;
+  z-index: 1;
+  background: #0b1120;
 }
 
 /* FABs */
