@@ -601,6 +601,8 @@ function connectWs(roomCode, userId, name) {
 
   ws.onopen = () => {
     STATE.wsReconnectAttempts = 0;
+    updateConnectionStatus('connected');
+    
     // Send join message compatible with both protocols
     ws.send(JSON.stringify({
       type: 'join',
@@ -661,6 +663,8 @@ function connectWs(roomCode, userId, name) {
 }
 
 function handleServerMessage(msg) {
+  updateConnectionStatus('connected');
+
   switch (msg.type) {
     case 'join':
     case 'JOINED':
@@ -670,6 +674,7 @@ function handleServerMessage(msg) {
 
     case 'room_members':
     case 'ROOM_STATE': {
+      updateConnectionStatus('connected');
       const members = msg.members || [];
       members.forEach(member => {
         if (member.id === STATE.myId || (member.name && member.name === STATE.myName)) return;

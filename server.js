@@ -180,6 +180,7 @@ wss.on('connection', (ws) => {
         .filter(p => p.data && p.data.id !== userId && p.ws && p.ws.readyState === WebSocket.OPEN)
         .map(p => p.data);
 
+      ws.send(JSON.stringify({ type: 'JOINED', roomCode: currentRoom, userId }));
       ws.send(JSON.stringify({ type: 'room_members', members: activeMembers }));
       ws.send(JSON.stringify({ type: 'ROOM_STATE', members: activeMembers }));
 
