@@ -231,14 +231,14 @@ const doSnapLocation = () => {
 
   if (friendWithLoc) {
     const loc = {
-      lat: friendWithLoc.location.lat + 0.000001,
-      lng: friendWithLoc.location.lng + 0.000001,
+      lat: friendWithLoc.location.lat,
+      lng: friendWithLoc.location.lng,
       type: 'gps',
-      accuracy: 2,
-      label: 'GPS • Synced for testing (±2m)'
+      accuracy: 1,
+      label: 'GPS • Synced with phone (0m)'
     };
     onMyLocationUpdate(loc);
-    showToast('🎯 PC location snapped to phone GPS! Distance is now 0m!', 'success', 4000);
+    showToast('🎯 PC location matched to phone GPS! Distance is 0m!', 'success', 4000);
   } else {
     showToast('⚠️ Waiting for your phone to send its GPS coordinates first…', 'warn', 4000);
   }
@@ -416,7 +416,7 @@ function handleServerMessage(msg) {
     case 'ROOM_STATE': {
       const members = msg.members || [];
       members.forEach(member => {
-        if (member.id === STATE.myId) return;
+        if (member.id === STATE.myId || (member.name && member.name === STATE.myName)) return;
         updateFriend(member.id, member);
       });
       renderFriendsList();
@@ -426,7 +426,7 @@ function handleServerMessage(msg) {
     }
 
     case 'joined': {
-      if (msg.userId && msg.userId !== STATE.myId) {
+      if (msg.userId && msg.userId !== STATE.myId && msg.name !== STATE.myName) {
         updateFriend(msg.userId, { id: msg.userId, name: msg.name || 'Friend' });
         renderFriendsList();
         renderBottomStrip();
