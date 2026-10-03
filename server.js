@@ -161,24 +161,28 @@ wss.on('connection', (ws) => {
       currentRoom = String(room).toUpperCase().trim();
       currentUserId = userId;
 
+      const userName = (name && name.trim()) ? name.trim() : 'Friend';
+
       if (!rooms[currentRoom]) rooms[currentRoom] = {};
       rooms[currentRoom][userId] = {
         ws,
-        data: { id: userId, name, roomCode: currentRoom, lastUpdated: Date.now() }
+        data: { id: userId, name: userName, roomCode: currentRoom, lastUpdated: Date.now() }
       };
       // Send back current room members so joiner can see existing friends
       const members = Object.values(rooms[currentRoom])
         .filter(p => p.data && p.data.id !== userId)
         .map(p => p.data);
-      if (members.length > 0)
-        ws.send(JSON.stringify({ type: 'room_members', members }));
-      broadcastToRoom(currentRoom, userId, { type: 'joined', userId, name });
-      console.log(`[+] ${name || userId} → room ${currentRoom} (${Object.keys(rooms[currentRoom]).length} members)`);
+      ws.send(JSON.stringify({ type: 'room_members', members }));
+      broadcastToRoom(currentRoom, userId, { type: 'joined', userId, name: userName });
+      console.log(`[+] ${userName} (${userId}) → room ${currentRoom} (${Object.keys(rooms[currentRoom]).length} members)`);
     }
 
     if (msg.type === 'location' && currentRoom && currentUserId) {
       const room = rooms[currentRoom];
       if (room?.[currentUserId]) {
+        if (msg.name && msg.name.trim()) {
+          room[currentUserId].data.name = msg.name.trim();
+        }
         Object.assign(room[currentUserId].data, {
           lat: msg.lat, lng: msg.lng,
           locationType: msg.locationType,
@@ -188,7 +192,7 @@ wss.on('connection', (ws) => {
         broadcastToRoom(currentRoom, currentUserId, {
           type: 'location',
           userId: currentUserId,
-          name: room[currentUserId].data.name,
+          name: room[currentUserId].data.name || 'Friend',
           lat: msg.lat, lng: msg.lng,
           locationType: msg.locationType,
           accuracy: msg.accuracy,
@@ -215,14 +219,15 @@ wss.on('connection', (ws) => {
       const { roomCode, userId, userData } = msg;
       currentRoom = String(roomCode).toUpperCase().trim();
       currentUserId = userId;
+      const userName = userData?.name || 'Friend';
       if (!rooms[currentRoom]) rooms[currentRoom] = {};
       rooms[currentRoom][userId] = {
         ws,
-        data: { ...userData, id: userId, roomCode: currentRoom, lastUpdated: Date.now() }
+        data: { ...userData, id: userId, name: userName, roomCode: currentRoom, lastUpdated: Date.now() }
       };
       ws.send(JSON.stringify({ type: 'JOINED', roomCode: currentRoom, userId }));
       broadcastRoomState(currentRoom);
-      console.log(`[+] ${userData?.name || userId} → room ${currentRoom} (${Object.keys(rooms[currentRoom]).length} members)`);
+      console.log(`[+] ${userName} → room ${currentRoom} (${Object.keys(rooms[currentRoom]).length} members)`);
     }
     if (msg.type === 'UPDATE_LOCATION' && currentRoom && currentUserId) {
       const room = rooms[currentRoom];
@@ -256,6 +261,7 @@ wss.on('connection', (ws) => {
     if (Object.keys(rooms[currentRoom]).length === 0) {
       delete rooms[currentRoom];
     } else {
+      broadcastToRoom(currentRoom, null, { type: 'left', userId: currentUserId });
       broadcastToRoom(currentRoom, null, { type: 'FRIEND_LEFT', userId: currentUserId });
       broadcastRoomState(currentRoom);
     }
