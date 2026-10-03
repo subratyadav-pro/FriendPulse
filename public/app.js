@@ -917,7 +917,13 @@ function escHtml(s) {
 // Onboarding — enter the app
 // ────────────────────────────────────────────────────────────
 function enterApp(roomCode, myName) {
-  STATE.myId = generateUserId();
+  let savedId = null;
+  try { savedId = localStorage.getItem('friendpulse_uid'); } catch (e) {}
+  if (!savedId) {
+    savedId = generateUserId();
+    try { localStorage.setItem('friendpulse_uid', savedId); } catch (e) {}
+  }
+  STATE.myId = savedId;
   STATE.myName = myName;
   STATE.roomCode = roomCode;
 

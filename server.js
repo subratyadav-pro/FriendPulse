@@ -164,17 +164,27 @@ wss.on('connection', (ws) => {
       const userName = (name && name.trim()) ? name.trim() : 'Friend';
 
       if (!rooms[currentRoom]) rooms[currentRoom] = {};
+
+      // Close previous connection if user is reconnecting
+      if (rooms[currentRoom][userId]?.ws && rooms[currentRoom][userId].ws !== ws) {
+        try { rooms[currentRoom][userId].ws.close(); } catch {}
+      }
+
       rooms[currentRoom][userId] = {
         ws,
         data: { id: userId, name: userName, roomCode: currentRoom, lastUpdated: Date.now() }
       };
-      // Send back current room members so joiner can see existing friends
-      const members = Object.values(rooms[currentRoom])
-        .filter(p => p.data && p.data.id !== userId)
+
+      // Send back active room members only
+      const activeMembers = Object.values(rooms[currentRoom])
+        .filter(p => p.data && p.data.id !== userId && p.ws && p.ws.readyState === WebSocket.OPEN)
         .map(p => p.data);
-      ws.send(JSON.stringify({ type: 'room_members', members }));
+
+      ws.send(JSON.stringify({ type: 'room_members', members: activeMembers }));
+      ws.send(JSON.stringify({ type: 'ROOM_STATE', members: activeMembers }));
+
       broadcastToRoom(currentRoom, userId, { type: 'joined', userId, name: userName });
-      console.log(`[+] ${userName} (${userId}) → room ${currentRoom} (${Object.keys(rooms[currentRoom]).length} members)`);
+      console.log(`[+] ${userName} (${userId}) → room ${currentRoom} (${Object.keys(rooms[currentRoom]).length} active)`);
     }
 
     if (msg.type === 'location' && currentRoom && currentUserId) {
