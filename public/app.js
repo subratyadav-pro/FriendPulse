@@ -912,7 +912,12 @@ function switchTab(tabId) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById(tabId).classList.add('active');
   document.querySelector(`.nav-btn[data-tab="${tabId}"]`).classList.add('active');
-  if (tabId === 'tab-map') setTimeout(() => STATE.map?.invalidateSize(), 100);
+  if (tabId === 'tab-map' && STATE.map) {
+    // Force Leaflet to recalculate container size and re-render tiles
+    setTimeout(() => { STATE.map.invalidateSize(); }, 50);
+    setTimeout(() => { STATE.map.invalidateSize(); }, 200);
+    setTimeout(() => { STATE.map.invalidateSize(); }, 500);
+  }
 }
 
 // ────────────────────────────────────────────────────────────
@@ -990,6 +995,11 @@ function enterApp(roomCode, myName) {
   // Init map
   initMap();
   initSosButton();
+
+  // Force Leaflet to render correctly after CSS layout settles
+  setTimeout(() => { STATE.map?.invalidateSize(); }, 100);
+  setTimeout(() => { STATE.map?.invalidateSize(); }, 400);
+  setTimeout(() => { STATE.map?.invalidateSize(); }, 1000);
 
   // Start location tracking
   startLocationTracking();
