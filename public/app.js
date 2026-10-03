@@ -676,12 +676,28 @@ function handleServerMessage(msg) {
     case 'ROOM_STATE': {
       updateConnectionStatus('connected');
       const members = msg.members || [];
+      let hasFriendWithLocation = false;
       members.forEach(member => {
         if (member.id === STATE.myId || (member.name && member.name === STATE.myName)) return;
         updateFriend(member.id, member);
+        // Ping every member immediately to get fresh GPS coordinates
+        if (STATE.ws?.readyState === WebSocket.OPEN) {
+          STATE.ws.send(JSON.stringify({
+            type: 'ping',
+            targetId: member.id,
+            room: STATE.roomCode,
+          }));
+        }
+        if (STATE.friends[member.id]?.location?.lat != null) {
+          hasFriendWithLocation = true;
+        }
       });
       renderFriendsList();
       renderBottomStrip();
+      // Auto-fit map to show all friends when room state arrives
+      if (hasFriendWithLocation) {
+        setTimeout(() => fitAllFriends(), 800);
+      }
       break;
     }
 
@@ -717,16 +733,21 @@ function handleServerMessage(msg) {
 
     case 'location': {
       if (msg.userId && msg.userId !== STATE.myId) {
+        const hadLocationBefore = STATE.friends[msg.userId]?.location?.lat != null;
         updateFriend(msg.userId, {
           id: msg.userId,
           name: msg.name || 'Friend',
           lat: msg.lat,
           lng: msg.lng,
-          locType: msg.locationType || 'gps',
+          locType: msg.locationType || msg.locType || 'gps',
           accuracy: msg.accuracy
         });
         renderFriendsList();
         renderBottomStrip();
+        // Auto-fit map the first time we receive this friend's location
+        if (!hadLocationBefore && STATE.friends[msg.userId]?.location?.lat != null) {
+          setTimeout(() => fitAllFriends(), 600);
+        }
       }
       break;
     }
@@ -789,13 +810,20 @@ function updateFriend(uid, data) {
     STATE.friends[uid].name = data.name || STATE.friends[uid].name;
     STATE.friends[uid].lastSeen = Date.now();
   }
-  if (data.lat != null) {
+
+  // Normalize: server sends lat/lng at top level, locType or locationType
+  const lat = data.lat ?? data.location?.lat;
+  const lng = data.lng ?? data.location?.lng;
+  const locType = data.locType || data.locationType || data.location?.locType || 'gps';
+  const accuracy = data.accuracy ?? data.location?.accuracy;
+
+  if (lat != null) {
     STATE.friends[uid].location = {
-      lat: data.lat, lng: data.lng,
-      locType: data.locType || 'unknown',
-      accuracy: data.accuracy,
-      city: data.city,
-      lastUpdated: data.lastUpdated
+      lat: Number(lat), lng: Number(lng),
+      locType,
+      accuracy,
+      city: data.city || data.location?.city,
+      lastUpdated: data.lastUpdated || data.location?.lastUpdated || Date.now()
     };
     addOrUpdateFriendMarker(uid, STATE.friends[uid]);
   }
