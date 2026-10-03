@@ -1,0 +1,9 @@
+node_modules/
+*.apk
+cloudflared.exe
+FriendPulseApp/
+android/
+lib/
+pubspec.yaml
+test_ssh.js
+.vscode/

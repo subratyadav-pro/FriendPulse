@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#0b1120">
+  <title>FriendPulse – Real-Time Location Tracker</title>
+  <meta name="description" content="Track your friends' live GPS location in real time. Works even when GPS is off.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin/>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ─────────────── ONBOARDING / JOIN SCREEN ─────────────── -->
+<div id="onboardScreen" class="screen active">
+  <div class="onboard-bg">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+  </div>
+  <div class="onboard-content">
+    <div class="logo-ring">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>
+    </div>
+    <h1 class="onboard-title">FriendPulse</h1>
+    <p class="onboard-sub">Real-time location radar.<br>No sign-up. No mock data. Just you and your friends.</p>
+
+    <!-- Your Name -->
+    <div class="input-block">
+      <label>Your Display Name</label>
+      <input id="myNameInput" type="text" placeholder="e.g. Subrat" maxlength="20" autocomplete="off">
+    </div>
+
+    <div class="divider-label">Choose an action</div>
+
+    <!-- Rejoin Last Active Room (shown if user previously joined a room) -->
+    <div id="rejoinCard" class="rejoin-card hidden" style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 16px; padding: 14px; margin-bottom: 16px; text-align: center;">
+      <div style="font-size: 11px; font-weight: 700; color: #10b981; letter-spacing: 1px; margin-bottom: 4px;">⚡ REJOIN LAST ACTIVE ROOM</div>
+      <div id="rejoinCodeText" style="font-size: 20px; font-weight: 800; color: #ffffff; letter-spacing: 2px; margin-bottom: 10px;">—</div>
+      <button id="rejoinLastRoomBtn" class="btn-primary" style="background: linear-gradient(135deg, #10b981, #059669); margin: 0; width: 100%;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+        Rejoin Last Room
+      </button>
+    </div>
+
+    <!-- Create Room -->
+    <button id="createRoomBtn" class="btn-primary">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v10m0 0l-3-3m3 3l3-3"/><path d="M20 17v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="17" r="2"/></svg>
+      Create New Room (Host)
+    </button>
+
+    <div class="or-separator">OR</div>
+
+    <!-- Join Existing Room -->
+    <div class="input-block">
+      <label>Friend's Room Code</label>
+      <input id="roomCodeInput" type="text" placeholder="e.g. PULSE-4821" maxlength="12" autocomplete="off" style="text-transform:uppercase;letter-spacing:2px">
+    </div>
+    <button id="joinRoomBtn" class="btn-secondary">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+      Join Friend's Room
+    </button>
+
+    <p class="onboard-note">
+      📍 GPS is preferred. If unavailable, your approximate city-level location (via IP) will be used as fallback.
+    </p>
+  </div>
+</div>
+
+<!-- ─────────────── MAIN APP SCREEN ─────────────── -->
+<div id="appScreen" class="screen">
+
+  <!-- Top Status Bar -->
+  <header class="app-header" id="appHeader">
+    <button id="backToOnboardBtn" class="icon-btn-small" title="Leave Room">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+    </button>
+    <div class="room-status-pill" id="roomStatusPill">
+      <div class="pulsing-dot" id="connectionDot"></div>
+      <span id="roomStatusLabel">Connecting…</span>
+    </div>
+    <button id="shareRoomBtn" class="icon-btn-primary" title="Share Room Code">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+    </button>
+  </header>
+
+  <!-- Tab 1: Map -->
+  <div id="tab-map" class="tab-panel active">
+    <div id="map"></div>
+
+    <!-- Recenter FAB -->
+    <button id="recenterBtn" class="fab">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="2"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>
+    </button>
+
+    <!-- Map Theme Toggle -->
+    <button id="mapThemeBtn" class="fab fab-secondary">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
+
+    <!-- Empty State when no friends online -->
+    <div id="mapEmptyState" class="map-empty-state hidden">
+      <div class="map-empty-icon">👥</div>
+      <h3>No friends online yet</h3>
+      <p>Share your room code and invite friends to join. They'll appear here when they connect.</p>
+      <button id="shareFromMapBtn" class="btn-outline-small">📤 Share Room Code</button>
+    </div>
+
+    <!-- Friends Bottom Slider -->
+    <div class="bottom-friend-strip" id="bottomFriendStrip">
+      <!-- dynamically populated -->
+    </div>
+  </div>
+
+  <!-- Tab 2: Friends List -->
+  <div id="tab-friends" class="tab-panel">
+    <div class="tab-scroll-content">
+      <div class="tab-header">
+        <h2>Connected Friends</h2>
+        <div class="member-count-badge" id="memberCountBadge">0 online</div>
+      </div>
+
+      <!-- Room Info Card -->
+      <div class="room-info-card" id="roomInfoCard">
+        <div class="room-info-header">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+          <span>Your Room</span>
+        </div>
+        <div class="room-code-display" id="roomCodeDisplay">—</div>
+        <p class="room-code-hint">Share this code with friends so they can join your radar</p>
+        <div class="room-actions">
+          <button id="copyRoomCodeBtn" class="room-action-btn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            Copy Code
+          </button>
+          <button id="shareRoomLinkBtn" class="room-action-btn primary">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+            Share Link
+          </button>
+        </div>
+
+        <!-- Public URL row — shown once localtunnel is ready -->
+        <div class="public-url-row hidden" style="margin-top:14px; background:rgba(0,0,0,0.25); border-radius:12px; padding:10px 12px;">
+          <div style="font-size:11px; color:rgba(255,255,255,0.6); font-weight:700; letter-spacing:1px; margin-bottom:4px;">🌍 PUBLIC LINK (any network)</div>
+          <a id="publicUrlDisplay" href="#" target="_blank" rel="noopener"
+             style="font-size:12px; color:#a5f3fc; word-break:break-all; font-weight:600;">
+            Generating tunnel…
+          </a>
+        </div>
+      </div>
+
+      <!-- Friends List -->
+      <div class="section-label">ONLINE NOW</div>
+      <div id="friendsList" class="friends-list-container">
+        <div class="no-friends-state" id="noFriendsState">
+          <div class="empty-icon">🔭</div>
+          <p>Waiting for friends to connect…</p>
+          <span>Share your room code to invite them</span>
+        </div>
+      </div>
+
+      <!-- Location mode legend -->
+      <div class="location-legend">
+        <div class="legend-row"><span class="dot green"></span> GPS Location (high accuracy)</div>
+        <div class="legend-row"><span class="dot orange"></span> IP Location (city-level, GPS was off)</div>
+        <div class="legend-row"><span class="dot gray"></span> Location unavailable</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab 3: SOS / Safety -->
+  <div id="tab-sos" class="tab-panel">
+    <div class="tab-scroll-content">
+      <div class="tab-header">
+        <h2>Safety & SOS</h2>
+      </div>
+
+      <!-- My location accuracy card -->
+      <div class="my-location-card" id="myLocationCard">
+        <div class="my-loc-icon" id="myLocIcon">📍</div>
+        <div class="my-loc-info">
+          <h4 id="myLocType">Detecting location…</h4>
+          <p id="myLocDetail">Getting your coordinates</p>
+        </div>
+        <button id="retryLocationBtn" class="retry-btn" title="Try getting GPS again">Retry GPS</button>
+      </div>
+
+      <!-- SOS Button -->
+      <div class="sos-container">
+        <div class="sos-ripple-ring"></div>
+        <div class="sos-ripple-ring ring-2"></div>
+        <button id="sosPanicBtn" class="sos-panic-btn">
+          <span id="sosBtnText">SOS</span>
+        </button>
+      </div>
+      <p class="sos-hint">Press & hold for 2 seconds to send your live location to <strong>all friends</strong> in the room as an emergency alert.</p>
+
+      <!-- SOS Activity Feed -->
+      <div class="section-label" style="margin-top: 24px;">SOS ACTIVITY</div>
+      <div id="sosActivityFeed" class="sos-feed">
+        <p class="feed-empty">No SOS alerts in this session.</p>
+      </div>
+
+      <!-- Emergency Numbers -->
+      <div class="section-label" style="margin-top: 24px;">QUICK HELPLINES</div>
+      <div class="helplines-grid">
+        <a href="tel:112" class="helpline-item blue">
+          <div class="helpline-emoji">🚨</div>
+          <div><h4>Emergency</h4><p>Call 112</p></div>
+        </a>
+        <a href="tel:100" class="helpline-item green">
+          <div class="helpline-emoji">👮</div>
+          <div><h4>Police</h4><p>Call 100</p></div>
+        </a>
+        <a href="tel:108" class="helpline-item orange">
+          <div class="helpline-emoji">🚑</div>
+          <div><h4>Ambulance</h4><p>Call 108</p></div>
+        </a>
+        <a href="tel:101" class="helpline-item red">
+          <div class="helpline-emoji">🔥</div>
+          <div><h4>Fire</h4><p>Call 101</p></div>
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom Navigation -->
+  <nav class="bottom-nav" id="bottomNav">
+    <button class="nav-btn active" data-tab="tab-map">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>
+      <span>Radar</span>
+    </button>
+    <button class="nav-btn" data-tab="tab-friends">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      <span>Friends</span>
+    </button>
+    <button class="nav-btn sos-nav" data-tab="tab-sos">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      <span>SOS</span>
+    </button>
+  </nav>
+
+  <!-- Friend Detail Bottom Sheet -->
+  <div id="detailSheet" class="bottom-sheet" aria-hidden="true">
+    <div class="sheet-drag-handle"></div>
+    <div id="detailSheetBody" class="sheet-body">
+      <!-- injected -->
+    </div>
+  </div>
+  <div id="sheetBackdrop" class="sheet-backdrop" aria-hidden="true"></div>
+
+  <!-- SOS Incoming Alert Overlay -->
+  <div id="sosAlertOverlay" class="sos-alert-overlay hidden">
+    <div class="sos-alert-box">
+      <div class="sos-alert-emoji">🚨</div>
+      <h2>EMERGENCY SOS</h2>
+      <p id="sosAlertText">A friend is in danger!</p>
+      <button id="sosAlertNavigateBtn" class="btn-primary">Open Location in Maps</button>
+      <button id="sosAlertDismissBtn" class="btn-dismiss">Dismiss</button>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script src="app.js"></script>
+</body>
+</html>
