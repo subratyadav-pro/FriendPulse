@@ -662,6 +662,9 @@ wss.on('connection', (ws) => {
     if (!currentRoom || !currentUserId || !rooms[currentRoom]) return;
     const member = rooms[currentRoom][currentUserId];
     if (!member) return;
+    // If this user already reconnected on another socket (e.g. WebView took
+    // over from the native background SOS listener), stay online.
+    if (member.ws && member.ws !== ws) return;
     const name = member.data?.name || currentUserId;
 
     // DO NOT DELETE USER: Mark as temporarily offline/away and retain last known location!

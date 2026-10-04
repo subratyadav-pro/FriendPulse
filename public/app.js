@@ -820,7 +820,17 @@ function buildWsUrl() {
 }
 
 function connectWs(roomCode, userId, name) {
-  if (STATE.ws) STATE.ws.close();
+  // Cancel any pending reconnect and detach the old socket's handlers so its
+  // close event can't trigger a duplicate reconnect (and ping-pong loops).
+  if (STATE.wsReconnectTimer) {
+    clearTimeout(STATE.wsReconnectTimer);
+    STATE.wsReconnectTimer = null;
+  }
+  if (STATE.ws) {
+    STATE.ws.onclose = null;
+    STATE.ws.onerror = null;
+    STATE.ws.close();
+  }
 
   const ws = new WebSocket(buildWsUrl());
   STATE.ws = ws;
@@ -878,10 +888,14 @@ function connectWs(roomCode, userId, name) {
 
   ws.onclose = () => {
     updateConnectionStatus('disconnected');
+    // While the page is hidden (app backgrounded/closed) the native Android
+    // SOS service owns the room connection — don't fight it for the socket.
+    if (document.hidden) return;
     if (STATE.wsReconnectAttempts < 5) {
       const delay = Math.min(1000 * 2 ** STATE.wsReconnectAttempts, 15000);
       STATE.wsReconnectAttempts++;
       STATE.wsReconnectTimer = setTimeout(() => {
+        STATE.wsReconnectTimer = null;
         connectWs(STATE.roomCode, STATE.myId, STATE.myName);
       }, delay);
     }
@@ -2181,6 +2195,14 @@ document.addEventListener('visibilitychange', () => {
     enableSilentAudioKeepalive();
     const bgPill = document.getElementById('hudBgText');
     if (bgPill) bgPill.textContent = 'Live Bg Active';
+    // We're visible again — retake the room connection (the native SOS
+    // service stops when the app is foregrounded). Skip if another
+    // reconnect is already pending.
+    if (STATE.roomCode && STATE.ws && STATE.ws.readyState !== WebSocket.OPEN &&
+        !STATE.wsReconnectTimer) {
+      STATE.wsReconnectAttempts = 0;
+      connectWs(STATE.roomCode, STATE.myId, STATE.myName);
+    }
   } else {
     const bgPill = document.getElementById('hudBgText');
     if (bgPill) bgPill.textContent = 'Tracking in Bg';
@@ -2236,6 +2258,21 @@ function enterApp(roomCode, myName) {
 
   // Connect WebSocket
   connectWs(roomCode, STATE.myId, myName);
+
+  // Tell the native Android wrapper (APK) to arm its background SOS listener.
+  // The native foreground service takes over the room connection when the app
+  // is closed, so emergency SOS broadcasts still ring this phone.
+  try {
+    if (window.ReactNativeWebView) {
+      window.ReactNativeWebView.postMessage(JSON.stringify({
+        type: 'REGISTER_BG_LISTENER',
+        room: roomCode,
+        userId: STATE.myId,
+        name: myName,
+        wsUrl: buildWsUrl()
+      }));
+    }
+  } catch (e) {}
 
   // Register Web Push notifications so phone rings even when app is closed!
   registerPushNotifications(roomCode, STATE.myId, myName);
