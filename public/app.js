@@ -1341,86 +1341,222 @@ function triggerSOS() {
   document.getElementById('sosPanicBtn').classList.remove('held');
 }
 
-// ─── Emergency Siren & Audio System ───────────────────────
-let sosSirenAudioContext = null;
-let sosSirenOscillator = null;
-let sosSirenGain = null;
-let sosSirenInterval = null;
+// ─── Emergency Siren Dual-Engine Audio System ─────────────
+let globalAudioCtx = null;
+let fallbackSirenAudio = null;
 let isSirenPlaying = false;
+let sirenCarrier = null;
+let sirenLfo = null;
+let sirenMasterGain = null;
+
+// Synthesizes a valid looping 16-bit PCM WAV siren in memory with 0 network dependencies
+function createSirenWavBlob() {
+  const sampleRate = 22050;
+  const duration = 1.0;
+  const numSamples = Math.floor(sampleRate * duration);
+  const buffer = new ArrayBuffer(44 + numSamples * 2);
+  const view = new DataView(buffer);
+
+  const writeString = (offset, str) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  };
+
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + numSamples * 2, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM format
+  view.setUint16(22, 1, true); // 1 channel (mono)
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeString(36, 'data');
+  view.setUint32(40, numSamples * 2, true);
+
+  // Generate loud dual-tone emergency police sweep (700Hz to 1300Hz)
+  let phase = 0;
+  for (let i = 0; i < numSamples; i++) {
+    const t = i / sampleRate;
+    const freq = 900 + 400 * Math.sin(2 * Math.PI * 2.2 * t);
+    phase += (2 * Math.PI * freq) / sampleRate;
+    const sample = Math.sin(phase) * 0.85; // 85% full loudness
+    view.setInt16(44 + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+  }
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+// Unlocks browser audio context on any user touch/click on screen
+function unlockAudio() {
+  try {
+    if (!globalAudioCtx) {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (AudioContextClass) globalAudioCtx = new AudioContextClass();
+    }
+    if (globalAudioCtx && globalAudioCtx.state === 'suspended') {
+      globalAudioCtx.resume().catch(() => {});
+    }
+    if (!fallbackSirenAudio) {
+      const blob = createSirenWavBlob();
+      fallbackSirenAudio = new Audio(URL.createObjectURL(blob));
+      fallbackSirenAudio.loop = true;
+      fallbackSirenAudio.volume = 1.0;
+    }
+  } catch (_) {}
+}
+
+// Bind audio unlock to common user interactions
+['click', 'touchstart', 'pointerdown', 'keydown'].forEach(ev => {
+  window.addEventListener(ev, () => {
+    unlockAudio();
+    // If siren is currently triggered but was muted by browser autoplay, unmute immediately
+    if (isSirenPlaying) {
+      if (globalAudioCtx && globalAudioCtx.state === 'suspended') {
+        globalAudioCtx.resume().then(() => updateSirenUiState(true)).catch(() => {});
+      }
+      if (fallbackSirenAudio && fallbackSirenAudio.paused) {
+        fallbackSirenAudio.play().then(() => updateSirenUiState(true)).catch(() => {});
+      }
+    }
+  }, { passive: true });
+});
+
+function updateSirenUiState(isPlaying) {
+  const unmuteBtn = document.getElementById('sosAlertUnmuteBtn');
+  const badge = document.getElementById('sosSirenBadge');
+  if (!unmuteBtn || !badge) return;
+
+  if (isPlaying) {
+    unmuteBtn.classList.add('hidden');
+    badge.textContent = '🔊 EMERGENCY SIREN RINGING';
+    badge.style.background = 'rgba(239, 68, 68, 0.25)';
+    badge.style.color = '#fca5a5';
+  } else {
+    // If browser suspended audio due to zero-interaction policy
+    unmuteBtn.classList.remove('hidden');
+    badge.textContent = '⚠️ AUDIO MUTED BY BROWSER';
+    badge.style.background = 'rgba(245, 158, 11, 0.25)';
+    badge.style.color = '#fde68a';
+    unmuteBtn.onclick = () => {
+      unlockAudio();
+      if (globalAudioCtx && globalAudioCtx.state === 'suspended') {
+        globalAudioCtx.resume().catch(() => {});
+      }
+      if (fallbackSirenAudio) {
+        fallbackSirenAudio.play().catch(() => {});
+      }
+      updateSirenUiState(true);
+    };
+  }
+}
 
 function startEmergencySiren() {
   if (isSirenPlaying) return;
-  try {
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextClass) return;
-    sosSirenAudioContext = new AudioContextClass();
-    if (sosSirenAudioContext.state === 'suspended') {
-      sosSirenAudioContext.resume();
+  isSirenPlaying = true;
+
+  unlockAudio();
+  let soundStarted = false;
+
+  // 1. Hardware Web Audio FM Siren (Continuous hardware-modulated siren)
+  if (globalAudioCtx) {
+    try {
+      if (globalAudioCtx.state === 'suspended') {
+        globalAudioCtx.resume().then(() => {
+          soundStarted = true;
+          updateSirenUiState(true);
+        }).catch(() => {
+          updateSirenUiState(false);
+        });
+      }
+
+      const carrier = globalAudioCtx.createOscillator();
+      const lfo = globalAudioCtx.createOscillator();
+      const modGain = globalAudioCtx.createGain();
+      const masterGain = globalAudioCtx.createGain();
+
+      carrier.type = 'sawtooth';
+      carrier.frequency.setValueAtTime(950, globalAudioCtx.currentTime);
+
+      lfo.type = 'triangle';
+      lfo.frequency.setValueAtTime(2.2, globalAudioCtx.currentTime);
+
+      modGain.gain.setValueAtTime(450, globalAudioCtx.currentTime); // Sweeps 500Hz to 1400Hz
+      masterGain.gain.setValueAtTime(0.85, globalAudioCtx.currentTime); // Full volume
+
+      lfo.connect(modGain);
+      modGain.connect(carrier.frequency);
+
+      carrier.connect(masterGain);
+      masterGain.connect(globalAudioCtx.destination);
+
+      lfo.start();
+      carrier.start();
+
+      sirenCarrier = carrier;
+      sirenLfo = lfo;
+      sirenMasterGain = masterGain;
+
+      if (globalAudioCtx.state === 'running') soundStarted = true;
+    } catch (err) {
+      console.warn('[SIREN] Web Audio oscillator error:', err);
     }
-
-    const osc = sosSirenAudioContext.createOscillator();
-    const gain = sosSirenAudioContext.createGain();
-
-    // Dual-tone emergency siren sweep (police/ambulance style alarm)
-    osc.type = 'sawtooth';
-    gain.gain.setValueAtTime(0.4, sosSirenAudioContext.currentTime);
-
-    let high = false;
-    const updatePitch = () => {
-      if (!isSirenPlaying || !sosSirenAudioContext || !osc) return;
-      try {
-        const t = sosSirenAudioContext.currentTime;
-        const targetFreq = high ? 700 : 1300;
-        osc.frequency.linearRampToValueAtTime(targetFreq, t + 0.35);
-        high = !high;
-      } catch (_) {}
-    };
-
-    osc.frequency.setValueAtTime(800, sosSirenAudioContext.currentTime);
-    osc.connect(gain);
-    gain.connect(sosSirenAudioContext.destination);
-    osc.start();
-
-    sosSirenOscillator = osc;
-    sosSirenGain = gain;
-    isSirenPlaying = true;
-    sosSirenInterval = setInterval(updatePitch, 380);
-
-    // Continuous mobile emergency vibration
-    if (navigator.vibrate) {
-      navigator.vibrate([500, 200, 500, 200, 1000, 300, 1000, 300, 1000]);
-    }
-    console.log('[SIREN] Emergency siren ringing activated');
-  } catch (err) {
-    console.warn('[SIREN] Siren audio error:', err);
   }
+
+  // 2. HTML5 Audio backup element
+  if (fallbackSirenAudio) {
+    fallbackSirenAudio.currentTime = 0;
+    fallbackSirenAudio.play().then(() => {
+      soundStarted = true;
+      updateSirenUiState(true);
+    }).catch(err => {
+      console.warn('[SIREN] HTML5 Audio autoplay restriction:', err.message);
+    });
+  }
+
+  // 3. Continuous phone vibration pattern
+  if (navigator.vibrate) {
+    navigator.vibrate([500, 200, 500, 200, 1000, 300, 1000, 300, 1000]);
+  }
+
+  updateSirenUiState(soundStarted);
+  console.log('[SIREN] Emergency siren activated');
 }
 
 function stopEmergencySiren() {
   if (!isSirenPlaying) return;
+  isSirenPlaying = false;
+
   try {
-    if (sosSirenInterval) {
-      clearInterval(sosSirenInterval);
-      sosSirenInterval = null;
+    if (sirenCarrier) {
+      sirenCarrier.stop();
+      sirenCarrier.disconnect();
+      sirenCarrier = null;
     }
-    if (sosSirenOscillator) {
-      sosSirenOscillator.stop();
-      sosSirenOscillator.disconnect();
+    if (sirenLfo) {
+      sirenLfo.stop();
+      sirenLfo.disconnect();
+      sirenLfo = null;
     }
-    if (sosSirenGain) {
-      sosSirenGain.disconnect();
-    }
-    if (sosSirenAudioContext) {
-      sosSirenAudioContext.close();
+    if (sirenMasterGain) {
+      sirenMasterGain.disconnect();
+      sirenMasterGain = null;
     }
   } catch (_) {}
-  isSirenPlaying = false;
-  sosSirenAudioContext = null;
-  sosSirenOscillator = null;
-  sosSirenGain = null;
+
+  if (fallbackSirenAudio) {
+    try {
+      fallbackSirenAudio.pause();
+      fallbackSirenAudio.currentTime = 0;
+    } catch (_) {}
+  }
+
   if (navigator.vibrate) {
     navigator.vibrate(0);
   }
+
+  const unmuteBtn = document.getElementById('sosAlertUnmuteBtn');
+  if (unmuteBtn) unmuteBtn.classList.add('hidden');
   console.log('[SIREN] Emergency siren stopped');
 }
 
@@ -1725,6 +1861,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 function enterApp(roomCode, myName) {
+  unlockAudio();
   let savedId = null;
   try { savedId = localStorage.getItem('friendpulse_uid'); } catch (e) {}
   if (!savedId) {
