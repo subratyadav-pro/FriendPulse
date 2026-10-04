@@ -125,6 +125,14 @@
 
     <!-- Map Floating Action Controls (Right side stack) -->
     <div class="map-fab-stack">
+      <!-- Zoom In & Zoom Out Controls -->
+      <button id="zoomInBtn" class="fab" title="Zoom In">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+      <button id="zoomOutBtn" class="fab" title="Zoom Out">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+
       <!-- Recenter on Me -->
       <button id="recenterBtn" class="fab" title="Recenter on My Location">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="2"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>
@@ -190,10 +198,16 @@
 
       <!-- Room Info Card -->
       <div class="room-info-card" id="roomInfoCard">
-        <div class="room-info-header">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
-          <span>Your Room</span>
+        <div class="room-info-header" style="justify-content:space-between;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+            <span id="roomCardTitle">Your Room</span>
+          </div>
+          <button id="editRoomNameBtn" class="edit-room-name-btn" title="Rename Room">
+            ✏️ Rename Room
+          </button>
         </div>
+        <div class="room-custom-name" id="roomCustomNameDisplay" style="font-size:18px; font-weight:800; color:#38bdf8; margin-bottom:4px; display:none;"></div>
         <div class="room-code-display" id="roomCodeDisplay">—</div>
         <p class="room-code-hint">Share this code with friends so they can join your radar</p>
         <div class="room-actions">
@@ -361,6 +375,26 @@
       </button>
       
       <button id="btnCancelLeave" class="btn-dismiss" style="margin-top:14px; cursor:pointer;">Cancel</button>
+    </div>
+  </div>
+
+  <!-- Rename Room Modal -->
+  <div id="renameModalOverlay" class="leave-modal-overlay hidden">
+    <div class="leave-modal-box">
+      <div class="leave-modal-icon">🏷️</div>
+      <h3 style="font-size: 19px; font-weight: 800; color: #fff; margin-bottom: 6px;">Name This Room</h3>
+      <p style="font-size: 13px; color: var(--muted); margin-bottom: 16px;">
+        Give this room a friendly name (e.g. <em>Family Trip</em>, <em>Office Squad</em>). The 6-digit room code stays the same so existing links keep working!
+      </p>
+      <input id="renameRoomInput" type="text" placeholder="e.g. Family Trip 🌴" maxlength="32" autocomplete="off"
+             style="width: 100%; padding: 12px 14px; background: rgba(255,255,255,0.08); border: 1.5px solid rgba(255,255,255,0.2); border-radius: 14px; color: #fff; font-size: 15px; font-weight: 600; outline: none; margin-bottom: 16px; box-sizing: border-box;" />
+      
+      <button id="btnSaveRoomName" class="btn-primary" style="margin-bottom: 8px; width: 100%;">
+        💾 Save Room Name
+      </button>
+      <button id="btnCancelRename" class="btn-dismiss" style="margin-top: 6px; cursor: pointer; width: 100%;">
+        Cancel
+      </button>
     </div>
   </div>
 

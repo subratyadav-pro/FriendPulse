@@ -509,6 +509,21 @@ a { text-decoration: none; }
   font-size: 13px; font-weight: 700; color: rgba(255,255,255,0.8);
   margin-bottom: 8px;
 }
+.edit-room-name-btn {
+  background: rgba(255,255,255,0.12);
+  border: 1px solid rgba(255,255,255,0.22);
+  border-radius: 20px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.edit-room-name-btn:hover {
+  background: rgba(255,255,255,0.22);
+  border-color: rgba(255,255,255,0.4);
+}
 .room-code-display {
   font-size: 24px; font-weight: 800;
   letter-spacing: 4px; color: white;

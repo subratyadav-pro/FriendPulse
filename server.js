@@ -33,6 +33,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 // ─── In-memory room store ──────────────────────────────────
 // rooms[code] = { [userId]: { ws, data } }
 const rooms = {};
+// roomMetadata[code] = { name: string, updatedAt: number }
+const roomMetadata = {};
 
 function sendSosPushNotifications(roomCode, senderUserId, sosData) {
   const roomCodeNorm = String(roomCode).toUpperCase().trim();
@@ -237,11 +239,38 @@ app.post('/api/sync-friend-location', (req, res) => {
       lng: Number(lng),
       locationType: 'gps',
       accuracy: 1,
+      isSnap: true,
       isOnline: member.isOnline
+    });
+    broadcastToRoom(roomCode, null, {
+      type: 'SNAP_LOCATION',
+      targetUserId,
+      userId: targetUserId,
+      lat: Number(lat),
+      lng: Number(lng)
     });
     console.log(`[SNAP] Synced ${member.data.name || targetUserId} to ${lat}, ${lng} in room ${roomCode}`);
   }
   res.json({ ok: true });
+});
+
+// Rename room friendly title (without altering 6-char room code)
+app.post('/api/rename-room', (req, res) => {
+  const { room, roomName } = req.body || {};
+  if (!room) return res.status(400).json({ error: 'Missing room' });
+  const roomCode = String(room).toUpperCase().trim();
+  const trimmedName = String(roomName || '').trim().slice(0, 35);
+  if (!roomMetadata[roomCode]) roomMetadata[roomCode] = {};
+  roomMetadata[roomCode].name = trimmedName;
+  roomMetadata[roomCode].updatedAt = Date.now();
+
+  broadcastToRoom(roomCode, null, {
+    type: 'ROOM_RENAMED',
+    roomCode,
+    roomName: trimmedName
+  });
+  console.log(`[ROOM-RENAME] Room ${roomCode} renamed to "${trimmedName}"`);
+  res.json({ ok: true, roomName: trimmedName });
 });
 
 // Browser beacon on tab close / background: stores last known location
@@ -425,9 +454,10 @@ wss.on('connection', (ws) => {
           isOnline: !!(p.ws && p.ws.readyState === WebSocket.OPEN && p.isOnline !== false)
         }));
 
-      ws.send(JSON.stringify({ type: 'JOINED', roomCode: currentRoom, userId }));
-      ws.send(JSON.stringify({ type: 'room_members', members: allMembers }));
-      ws.send(JSON.stringify({ type: 'ROOM_STATE', members: allMembers }));
+      const currentRoomName = roomMetadata[currentRoom]?.name || null;
+      ws.send(JSON.stringify({ type: 'JOINED', roomCode: currentRoom, userId, roomName: currentRoomName }));
+      ws.send(JSON.stringify({ type: 'room_members', members: allMembers, roomName: currentRoomName }));
+      ws.send(JSON.stringify({ type: 'ROOM_STATE', members: allMembers, roomName: currentRoomName }));
 
       broadcastToRoom(currentRoom, userId, {
         type: 'joined',
@@ -519,8 +549,33 @@ wss.on('connection', (ws) => {
           lng: Number(lng),
           locationType: 'gps',
           accuracy: 1,
+          isSnap: true,
           isOnline: member.isOnline
         });
+        broadcastToRoom(currentRoom, null, {
+          type: 'SNAP_LOCATION',
+          targetUserId,
+          userId: targetUserId,
+          lat: Number(lat),
+          lng: Number(lng)
+        });
+        console.log(`[SNAP-WS] Synced ${member.data.name || targetUserId} to ${lat}, ${lng} in room ${currentRoom}`);
+      }
+    }
+
+    if ((msg.type === 'RENAME_ROOM' || msg.type === 'rename_room') && (currentRoom || msg.room)) {
+      const roomCode = String(msg.room || currentRoom).toUpperCase().trim();
+      const trimmedName = String(msg.roomName || '').trim().slice(0, 35);
+      if (roomCode) {
+        if (!roomMetadata[roomCode]) roomMetadata[roomCode] = {};
+        roomMetadata[roomCode].name = trimmedName;
+        roomMetadata[roomCode].updatedAt = Date.now();
+        broadcastToRoom(roomCode, null, {
+          type: 'ROOM_RENAMED',
+          roomCode,
+          roomName: trimmedName
+        });
+        console.log(`[RENAME-WS] Room ${roomCode} renamed to "${trimmedName}"`);
       }
     }
 

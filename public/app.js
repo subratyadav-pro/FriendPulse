@@ -13,6 +13,8 @@ const STATE = {
   myId: null,
   myName: '',
   roomCode: null,
+  roomName: null,
+  isLocationLocked: false,
   publicUrl: null,       // public tunnel URL (localtunnel)
   ws: null,
   myLocation: null,
@@ -30,6 +32,22 @@ const STATE = {
   wsReconnectAttempts: 0,
   locationBroadcastInterval: null,
 };
+
+// ── Native Android GPS Bridge (from FriendPulse Native App WebView) ──
+window.__nativeGpsCallback = function(pos) {
+  if (!pos || !pos.coords) return;
+  onMyLocationUpdate({
+    lat: pos.coords.latitude,
+    lng: pos.coords.longitude,
+    type: 'gps',
+    accuracy: Math.round(pos.coords.accuracy || 1),
+    speed: pos.coords.speed,
+    label: `GPS • ±${Math.round(pos.coords.accuracy || 1)}m accuracy`
+  });
+};
+window.addEventListener('nativeGps', function(e) {
+  if (e.detail) window.__nativeGpsCallback(e.detail);
+});
 
 // Color palette for friend avatars
 const AVATAR_COLORS = [
@@ -342,104 +360,137 @@ document.getElementById('retryLocationBtn')?.addEventListener('click', () => {
   startLocationTracking();
 });
 
-// Snap PC location to phone location for testing 0m
-const doSnapLocation = () => {
+// Snap all devices in the room to 0m (Sync PC & Phone for testing or close proximity)
+const snapAllToZero = () => {
   const friends = Object.values(STATE.friends);
+  if (friends.length === 0) {
+    showToast('⚠️ No friends in room yet. Open app on second device first!', 'warn', 3000);
+    return;
+  }
+
+  // 1. Check if a friend has GPS location
+  const friendWithGps = friends.find(f => f.location && f.location.lat != null && f.location.locType === 'gps');
+  // 2. Or any friend with location
   const friendWithLoc = friends.find(f => f.location && f.location.lat != null);
+  // 3. Or my location if GPS active
+  const myGps = (STATE.myLocation && STATE.myLocation.lat != null && STATE.myLocation.type === 'gps') ? STATE.myLocation : null;
 
-  if (friendWithLoc) {
-    STATE.isLocationLocked = true;
-    const loc = {
-      lat: friendWithLoc.location.lat,
-      lng: friendWithLoc.location.lng,
-      type: 'gps',
+  let targetLat, targetLng, sourceName;
+
+  if (friendWithGps) {
+    targetLat = Number(friendWithGps.location.lat);
+    targetLng = Number(friendWithGps.location.lng);
+    sourceName = friendWithGps.name;
+  } else if (myGps) {
+    targetLat = Number(myGps.lat);
+    targetLng = Number(myGps.lng);
+    sourceName = 'your GPS';
+  } else if (friendWithLoc) {
+    targetLat = Number(friendWithLoc.location.lat);
+    targetLng = Number(friendWithLoc.location.lng);
+    sourceName = friendWithLoc.name;
+  } else if (STATE.myLocation && STATE.myLocation.lat != null) {
+    targetLat = Number(STATE.myLocation.lat);
+    targetLng = Number(STATE.myLocation.lng);
+    sourceName = 'your position';
+  } else {
+    showToast('⚠️ Detecting coordinates… please wait a few seconds and try again.', 'warn', 3500);
+    return;
+  }
+
+  // Lock this device's location to the target coordinates
+  STATE.isLocationLocked = true;
+  const snapLoc = {
+    lat: targetLat,
+    lng: targetLng,
+    type: 'gps',
+    accuracy: 1,
+    label: `GPS • Synced with ${sourceName} (0m)`
+  };
+  onMyLocationUpdate(snapLoc, true);
+
+  // Broadcast location update
+  if (STATE.ws && STATE.ws.readyState === WebSocket.OPEN) {
+    STATE.ws.send(JSON.stringify({
+      type: 'location',
+      room: STATE.roomCode,
+      userId: STATE.myId,
+      name: STATE.myName,
+      lat: targetLat,
+      lng: targetLng,
+      locationType: 'gps',
       accuracy: 1,
-      label: 'GPS • Synced with phone (0m)'
-    };
-    onMyLocationUpdate(loc, true);
+      isSnap: true
+    }));
+  }
+  fetch('/api/bg-location', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      room: STATE.roomCode,
+      userId: STATE.myId,
+      name: STATE.myName,
+      lat: targetLat,
+      lng: targetLng,
+      locationType: 'gps',
+      accuracy: 1
+    }),
+    keepalive: true
+  }).catch(() => {});
 
-    fetch('/api/bg-location', {
+  // Update friends locally and tell server to snap all friends to identical coords
+  friends.forEach(f => {
+    f.location = {
+      lat: targetLat,
+      lng: targetLng,
+      locType: 'gps',
+      accuracy: 1,
+      lastUpdated: Date.now()
+    };
+    addOrUpdateFriendMarker(f.id, f);
+
+    if (STATE.ws && STATE.ws.readyState === WebSocket.OPEN) {
+      STATE.ws.send(JSON.stringify({
+        type: 'SYNC_FRIEND_LOCATION',
+        room: STATE.roomCode,
+        targetUserId: f.id,
+        lat: targetLat,
+        lng: targetLng
+      }));
+    }
+
+    fetch('/api/sync-friend-location', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         room: STATE.roomCode,
-        userId: STATE.myId,
-        name: STATE.myName,
-        lat: loc.lat,
-        lng: loc.lng,
-        locationType: 'gps',
-        accuracy: 1
+        targetUserId: f.id,
+        lat: targetLat,
+        lng: targetLng
       }),
       keepalive: true
     }).catch(() => {});
+  });
 
-    showToast('🎯 PC location locked to phone GPS! Distance is 0m!', 'success', 4000);
-  } else {
-    showToast('⚠️ Waiting for your phone to send its GPS coordinates first…', 'warn', 4000);
-  }
+  drawDistanceLines();
+  renderFriendsList();
+  renderBottomStrip();
+  showToast(`🎯 All devices synced to ${sourceName}! Distance is 0m!`, 'success', 4500);
 };
 
-// Universal 0m Snap (Works from phone OR PC!)
-const snapAllToZero = () => {
-  const hasFriends = Object.keys(STATE.friends).length > 0;
-  if (!hasFriends) {
-    showToast('⚠️ No friends in room yet. Open app on both devices!', 'warn', 3000);
-    return;
-  }
-
-  // If this device has GPS (like mobile phone), snap all friends to here:
-  if (STATE.myLocation && STATE.myLocation.lat != null && (STATE.myLocation.type === 'gps' || !STATE.isLocationLocked)) {
-    const myLat = Number(STATE.myLocation.lat);
-    const myLng = Number(STATE.myLocation.lng);
-    let count = 0;
-
-    Object.entries(STATE.friends).forEach(([uid, f]) => {
-      f.location = {
-        lat: myLat,
-        lng: myLng,
-        locType: 'gps',
-        accuracy: 1,
-        lastUpdated: Date.now()
-      };
-      addOrUpdateFriendMarker(uid, f);
-      count++;
-
-      if (STATE.ws && STATE.ws.readyState === WebSocket.OPEN) {
-        STATE.ws.send(JSON.stringify({
-          type: 'SYNC_FRIEND_LOCATION',
-          room: STATE.roomCode,
-          targetUserId: uid,
-          lat: myLat,
-          lng: myLng
-        }));
-      }
-
-      fetch('/api/sync-friend-location', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          room: STATE.roomCode,
-          targetUserId: uid,
-          lat: myLat,
-          lng: myLng
-        }),
-        keepalive: true
-      }).catch(() => {});
-    });
-
-    drawDistanceLines();
-    renderFriendsList();
-    renderBottomStrip();
-    showToast(`🎯 Snapped all friends to your position! Distance is 0m!`, 'success', 4500);
-  } else {
-    // This device is PC / has no GPS: snap to the phone!
-    doSnapLocation();
-  }
-};
+const doSnapLocation = snapAllToZero;
 
 document.getElementById('syncLocationBtn')?.addEventListener('click', snapAllToZero);
 document.getElementById('snapGpsBtn')?.addEventListener('click', snapAllToZero);
 document.getElementById('radarSnapBtn')?.addEventListener('click', snapAllToZero);
+
+// Zoom in / out controls on map
+document.getElementById('zoomInBtn')?.addEventListener('click', () => {
+  if (STATE.map) STATE.map.zoomIn();
+});
+document.getElementById('zoomOutBtn')?.addEventListener('click', () => {
+  if (STATE.map) STATE.map.zoomOut();
+});
 
 // ────────────────────────────────────────────────────────────
 // Map
@@ -463,6 +514,10 @@ function initMap() {
     STATE.map = L.map('map', {
       zoomControl: false,
       attributionControl: false,
+      touchZoom: true,
+      doubleClickZoom: true,
+      zoomDelta: 0.5,
+      zoomSnap: 0.5,
     }).setView(defaultCenter, defaultZoom);
 
     setMapTheme(STATE.mapTheme || 'dark');
@@ -844,12 +899,14 @@ function handleServerMessage(msg) {
     case 'join':
     case 'JOINED':
       updateConnectionStatus('connected');
+      if (msg.roomName) applyRoomName(msg.roomName, false);
       showToast(`✅ Connected to room ${msg.roomCode || STATE.roomCode}`, 'success');
       break;
 
     case 'room_members':
     case 'ROOM_STATE': {
       updateConnectionStatus('connected');
+      if (msg.roomName) applyRoomName(msg.roomName, false);
       const members = msg.members || [];
       let hasFriendWithLocation = false;
       members.forEach(member => {
@@ -885,6 +942,42 @@ function handleServerMessage(msg) {
       break;
     }
 
+    case 'ROOM_RENAMED':
+      if (msg.roomName) {
+        applyRoomName(msg.roomName, false);
+        showToast(`🏷️ Room named "${msg.roomName}"`, 'info', 3500);
+      }
+      break;
+
+    case 'SNAP_LOCATION': {
+      const targetId = msg.targetUserId || msg.userId;
+      if (targetId === STATE.myId) {
+        STATE.isLocationLocked = true;
+        const snapLoc = {
+          lat: Number(msg.lat),
+          lng: Number(msg.lng),
+          type: 'gps',
+          accuracy: 1,
+          label: 'GPS • Synced with room (0m)'
+        };
+        onMyLocationUpdate(snapLoc, true);
+        showToast('🎯 Location synchronized to 0m!', 'success', 3500);
+      } else if (STATE.friends[targetId]) {
+        STATE.friends[targetId].location = {
+          lat: Number(msg.lat),
+          lng: Number(msg.lng),
+          locType: 'gps',
+          accuracy: 1,
+          lastUpdated: Date.now()
+        };
+        addOrUpdateFriendMarker(targetId, STATE.friends[targetId]);
+        drawDistanceLines();
+        renderFriendsList();
+        renderBottomStrip();
+      }
+      break;
+    }
+
     case 'joined': {
       if (msg.userId && msg.userId !== STATE.myId && msg.name !== STATE.myName) {
         updateFriend(msg.userId, { id: msg.userId, name: msg.name || 'Friend' });
@@ -916,6 +1009,19 @@ function handleServerMessage(msg) {
     }
 
     case 'location': {
+      if (msg.userId === STATE.myId && msg.isSnap) {
+        STATE.isLocationLocked = true;
+        const snapLoc = {
+          lat: Number(msg.lat),
+          lng: Number(msg.lng),
+          type: 'gps',
+          accuracy: 1,
+          label: 'GPS • Synced with room (0m)'
+        };
+        onMyLocationUpdate(snapLoc, true);
+        showToast('🎯 Location synchronized to 0m!', 'success', 3500);
+        break;
+      }
       if (msg.userId && msg.userId !== STATE.myId) {
         const hadLocationBefore = STATE.friends[msg.userId]?.location?.lat != null;
         updateFriend(msg.userId, {
@@ -1113,11 +1219,102 @@ function updateConnectionStatus(status) {
   const label = document.getElementById('roomStatusLabel');
   if (status === 'connected') {
     dot.className = 'pulsing-dot connected';
-    label.textContent = `Room ${STATE.roomCode}`;
+    label.textContent = STATE.roomName ? `${STATE.roomName} • ${STATE.roomCode}` : `Room ${STATE.roomCode}`;
   } else {
     dot.className = 'pulsing-dot';
     label.textContent = 'Reconnecting…';
   }
+}
+
+// ── Room Naming & Aliases ────────────────────────────────────
+function applyRoomName(name, broadcast = true) {
+  const cleanName = (name || '').trim();
+  STATE.roomName = cleanName || null;
+
+  try {
+    if (cleanName && STATE.roomCode) {
+      localStorage.setItem('friendpulse_room_name_' + STATE.roomCode, cleanName);
+      localStorage.setItem('friendpulse_last_room_name', cleanName);
+    } else if (!cleanName && STATE.roomCode) {
+      localStorage.removeItem('friendpulse_room_name_' + STATE.roomCode);
+      localStorage.removeItem('friendpulse_last_room_name');
+    }
+  } catch (_) {}
+
+  // Update header status pill
+  updateConnectionStatus('connected');
+
+  // Update Room Info Card
+  const customDisplay = document.getElementById('roomCustomNameDisplay');
+  const cardTitle = document.getElementById('roomCardTitle');
+  if (customDisplay) {
+    if (cleanName) {
+      customDisplay.textContent = cleanName;
+      customDisplay.style.display = 'block';
+      if (cardTitle) cardTitle.textContent = cleanName;
+    } else {
+      customDisplay.textContent = '';
+      customDisplay.style.display = 'none';
+      if (cardTitle) cardTitle.textContent = 'Your Room';
+    }
+  }
+
+  // Update Rejoin Card if present
+  const rejoinCodeText = document.getElementById('rejoinCodeText');
+  if (rejoinCodeText && STATE.roomCode) {
+    rejoinCodeText.textContent = cleanName ? `${cleanName} (${STATE.roomCode})` : STATE.roomCode;
+  }
+
+  if (broadcast && STATE.roomCode) {
+    if (STATE.ws && STATE.ws.readyState === WebSocket.OPEN) {
+      STATE.ws.send(JSON.stringify({
+        type: 'RENAME_ROOM',
+        room: STATE.roomCode,
+        roomName: cleanName
+      }));
+    }
+    fetch('/api/rename-room', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ room: STATE.roomCode, roomName: cleanName })
+    }).catch(() => {});
+  }
+}
+
+function initRoomNaming() {
+  const editBtn = document.getElementById('editRoomNameBtn');
+  const modal = document.getElementById('renameModalOverlay');
+  const input = document.getElementById('renameRoomInput');
+  const saveBtn = document.getElementById('btnSaveRoomName');
+  const cancelBtn = document.getElementById('btnCancelRename');
+
+  if (!editBtn || !modal) return;
+
+  editBtn.onclick = () => {
+    input.value = STATE.roomName || '';
+    modal.classList.remove('hidden');
+    setTimeout(() => input.focus(), 150);
+  };
+
+  const closeModal = () => modal.classList.add('hidden');
+  if (cancelBtn) cancelBtn.onclick = closeModal;
+  modal.onclick = (e) => {
+    if (e.target === modal) closeModal();
+  };
+
+  if (saveBtn) {
+    saveBtn.onclick = () => {
+      const val = input.value.trim();
+      applyRoomName(val, true);
+      closeModal();
+      showToast(val ? `🏷️ Room name saved: "${val}"` : '🏷️ Room name reset', 'success');
+    };
+  }
+
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') saveBtn?.click();
+    if (e.key === 'Escape') closeModal();
+  };
 }
 
 // ────────────────────────────────────────────────────────────
@@ -2013,6 +2210,15 @@ function enterApp(roomCode, myName) {
   document.getElementById('appScreen').classList.add('active');
   document.getElementById('roomCodeDisplay').textContent = roomCode;
 
+  // Init room naming and restore saved custom name
+  initRoomNaming();
+  try {
+    const savedRoomName = localStorage.getItem('friendpulse_room_name_' + roomCode) || localStorage.getItem('friendpulse_last_room_name');
+    if (savedRoomName) {
+      applyRoomName(savedRoomName, false);
+    }
+  } catch (e) {}
+
   // Init map
   initMap();
   initSosButton();
@@ -2186,10 +2392,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (savedName) document.getElementById('myNameInput').value = savedName;
 
     const lastRoom = localStorage.getItem('friendpulse_last_room');
+    const lastRoomName = localStorage.getItem('friendpulse_last_room_name') || localStorage.getItem('friendpulse_room_name_' + lastRoom);
     const rejoinCard = document.getElementById('rejoinCard');
     const rejoinCodeText = document.getElementById('rejoinCodeText');
     if (lastRoom && rejoinCard && rejoinCodeText) {
-      rejoinCodeText.textContent = lastRoom;
+      rejoinCodeText.textContent = lastRoomName ? `${lastRoomName} (${lastRoom})` : lastRoom;
       rejoinCard.classList.remove('hidden');
     }
   } catch (e) {}
