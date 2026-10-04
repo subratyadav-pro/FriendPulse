@@ -286,6 +286,44 @@
       </div>
       <p class="sos-hint">Press & hold for 2 seconds to send your live location to <strong>all friends</strong> in the room as an emergency alert.</p>
 
+      <!-- SOS sender panel: friend acknowledgments + I'm Safe check-in -->
+      <div id="sosAckBanner" class="sos-ack-banner hidden">
+        <div id="sosAckIcon" class="sos-ack-icon">⏳</div>
+        <div class="sos-ack-info">
+          <h4 id="sosAckTitle">SOS sent — waiting for friends…</h4>
+          <p id="sosAckDetail">Friends who see your alert are counted here</p>
+        </div>
+      </div>
+      <button id="sosSafeBtn" class="sos-safe-btn hidden">✅ I'M SAFE — notify friends</button>
+
+      <!-- Safety Watch (dead-man switch): auto-SOS if no check-in -->
+      <div class="watch-card" id="watchCard">
+        <div class="watch-head">
+          <div class="watch-icon">⏱️</div>
+          <div>
+            <h4>Safety Watch</h4>
+            <p>Auto-SOS with your location if you don't check in</p>
+          </div>
+        </div>
+        <div id="watchIdle">
+          <div class="watch-chips">
+            <button class="watch-chip" data-mins="15">15m</button>
+            <button class="watch-chip active" data-mins="30">30m</button>
+            <button class="watch-chip" data-mins="60">60m</button>
+          </div>
+          <button id="watchArmBtn" class="watch-arm-btn">🛡️ ARM SAFETY WATCH</button>
+          <p class="watch-note">Works even if your phone is locked or the app is closed.</p>
+        </div>
+        <div id="watchActive" class="hidden">
+          <div id="watchCountdown" class="watch-countdown">30:00</div>
+          <p id="watchStatus" class="watch-status">SOS fires automatically if you don't check in</p>
+          <div class="watch-actions">
+            <button id="watchCheckInBtn" class="watch-checkin-btn">✅ CHECK IN</button>
+            <button id="watchCancelBtn" class="watch-cancel-btn">Cancel watch</button>
+          </div>
+        </div>
+      </div>
+
       <!-- SOS Activity Feed -->
       <div class="section-label" style="margin-top: 24px;">SOS ACTIVITY</div>
       <div id="sosActivityFeed" class="sos-feed">

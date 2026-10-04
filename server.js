@@ -44,6 +44,8 @@ app.use(express.static(path.join(__dirname, 'public'), {
 const rooms = {};
 // roomMetadata[code] = { name: string, updatedAt: number }
 const roomMetadata = {};
+// sosAcks[code][senderUserId] = Set of userIds who acknowledged that SOS
+const sosAcks = {};
 
 function sendSosPushNotifications(roomCode, senderUserId, sosData) {
   const roomCodeNorm = String(roomCode).toUpperCase().trim();
@@ -351,7 +353,7 @@ app.post('/api/push-subscribe', (req, res) => {
 
 // HTTP SOS fallback — works even if client's WS is closed/paused
 app.post('/api/sos', (req, res) => {
-  const { room, userId, name, lat, lng, locType, timestamp } = req.body || {};
+  const { room, userId, name, lat, lng, locType, timestamp, auto } = req.body || {};
   if (!room || !userId) return res.status(400).json({ error: 'Missing fields' });
   const roomCode = String(room).toUpperCase().trim();
   const senderName = name || rooms[roomCode]?.[userId]?.data?.name || 'A friend';
@@ -365,6 +367,7 @@ app.post('/api/sos', (req, res) => {
     lat: lat ? Number(lat) : null,
     lng: lng ? Number(lng) : null,
     locType: locType || 'gps',
+    auto: auto === true,
     timestamp: timestamp || Date.now()
   };
 
@@ -375,6 +378,23 @@ app.post('/api/sos', (req, res) => {
   sendSosPushNotifications(roomCode, userId, sosPayload);
 
   res.json({ ok: true, broadcast: true, push: true });
+});
+
+// "I'm Safe" check-in — HTTP fallback when the sender's WebSocket is down
+app.post('/api/safe', (req, res) => {
+  const { room, userId, name } = req.body || {};
+  if (!room || !userId) return res.status(400).json({ error: 'Missing fields' });
+  const roomCode = String(room).toUpperCase().trim();
+  const safeName = name || rooms[roomCode]?.[userId]?.data?.name || 'A friend';
+  if (sosAcks[roomCode]) delete sosAcks[roomCode][userId];
+  broadcastToRoom(roomCode, userId, {
+    type: 'SAFE_ALERT',
+    userId,
+    name: safeName,
+    timestamp: Date.now()
+  });
+  console.log(`[SAFE-HTTP] ${safeName} marked safe in room ${roomCode}`);
+  res.json({ ok: true });
 });
 
 // ─── SOS Evidence Photos ───────────────────────────────────
@@ -579,6 +599,7 @@ wss.on('connection', (ws) => {
         lat: msg.lat ? Number(msg.lat) : null,
         lng: msg.lng ? Number(msg.lng) : null,
         locType: msg.locType || 'gps',
+        auto: msg.auto === true,
         timestamp: msg.timestamp || Date.now()
       };
       console.log(`[SOS-WS] 🚨 Emergency SOS from ${name} in room ${roomCode}`);
@@ -587,6 +608,45 @@ wss.on('connection', (ws) => {
         sendSosPushNotifications(roomCode, uid, sosData);
       } catch (err) {
         console.warn('[PUSH-ERR]', err.message);
+      }
+    }
+
+    // ── "I'm Safe" check-in from an SOS sender ─────────────────
+    if (msg.type === 'safe' && (currentRoom || msg.room)) {
+      const roomCode = String(currentRoom || msg.room).toUpperCase().trim();
+      const uid = currentUserId || msg.userId;
+      if (roomCode && uid) {
+        const name = msg.name || rooms[roomCode]?.[uid]?.data?.name || 'A friend';
+        if (sosAcks[roomCode]) delete sosAcks[roomCode][uid];
+        broadcastToRoom(roomCode, uid, {
+          type: 'SAFE_ALERT',
+          userId: uid,
+          name,
+          timestamp: Date.now()
+        });
+        console.log(`[SAFE] ${name} marked themselves safe in room ${roomCode}`);
+      }
+    }
+
+    // ── Friend acknowledges someone's SOS ("I saw it") ────────
+    if (msg.type === 'sos_ack' && (currentRoom || msg.room)) {
+      const roomCode = String(currentRoom || msg.room).toUpperCase().trim();
+      const uid = currentUserId || msg.userId;
+      const target = msg.targetUserId;
+      if (roomCode && uid && target && target !== uid) {
+        const name = msg.name || rooms[roomCode]?.[uid]?.data?.name || 'A friend';
+        if (!sosAcks[roomCode]) sosAcks[roomCode] = {};
+        if (!sosAcks[roomCode][target]) sosAcks[roomCode][target] = new Set();
+        sosAcks[roomCode][target].add(uid);
+        broadcastToRoom(roomCode, null, {
+          type: 'SOS_ACK',
+          targetUserId: target,
+          ackUserId: uid,
+          ackName: name,
+          ackCount: sosAcks[roomCode][target].size,
+          timestamp: Date.now()
+        });
+        console.log(`[SOS-ACK] ${name} acknowledged ${target}'s SOS (${sosAcks[roomCode][target].size} total)`);
       }
     }
 

@@ -32,6 +32,9 @@ const STATE = {
   wsReconnectAttempts: 0,
   locationBroadcastInterval: null,
   sosPhotos: {},        // userId → [{ photoUrl, camera, timestamp, ... }]
+  currentSosAlertUserId: null,
+  ackNames: new Set(),  // friends who acknowledged my active SOS
+  watch: null,          // Safety Watch state { expiresAt, durationMs, timer }
 };
 
 // ── Native Android GPS Bridge (from FriendPulse Native App WebView) ──
@@ -298,6 +301,9 @@ function onMyLocationUpdate(loc, isManual = false) {
       }
     }));
   }
+
+  // Keep the Safety Watch's last-known location fresh for the native timer
+  if (STATE.watch) syncWatchToNative();
 }
 
 // Beacon sent before tab unloads or backgrounded to keep location persistent
@@ -485,13 +491,33 @@ document.getElementById('syncLocationBtn')?.addEventListener('click', snapAllToZ
 document.getElementById('snapGpsBtn')?.addEventListener('click', snapAllToZero);
 document.getElementById('radarSnapBtn')?.addEventListener('click', snapAllToZero);
 
-// Zoom in / out controls on map
-document.getElementById('zoomInBtn')?.addEventListener('click', () => {
-  if (STATE.map) STATE.map.zoomIn();
-});
-document.getElementById('zoomOutBtn')?.addEventListener('click', () => {
-  if (STATE.map) STATE.map.zoomOut();
-});
+// Zoom in / out controls — tap for one step, press & hold to zoom continuously
+function setupZoomHold(btnId, stepFn) {
+  const btn = document.getElementById(btnId);
+  if (!btn) return;
+  let holdDelay = null;
+  let repeatTimer = null;
+  const stop = () => {
+    clearTimeout(holdDelay);
+    clearInterval(repeatTimer);
+    holdDelay = null;
+    repeatTimer = null;
+  };
+  btn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    stop();
+    if (STATE.map) stepFn();
+    holdDelay = setTimeout(() => {
+      repeatTimer = setInterval(() => { if (STATE.map) stepFn(); }, 200);
+    }, 400);
+  });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(evt =>
+    btn.addEventListener(evt, stop)
+  );
+  btn.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+setupZoomHold('zoomInBtn', () => STATE.map.zoomIn(0.5, { duration: 0.18 }));
+setupZoomHold('zoomOutBtn', () => STATE.map.zoomOut(0.5, { duration: 0.18 }));
 
 // ────────────────────────────────────────────────────────────
 // Map
@@ -509,16 +535,22 @@ function initMap() {
   const defaultCenter = STATE.myLocation && STATE.myLocation.lat != null 
     ? [Number(STATE.myLocation.lat), Number(STATE.myLocation.lng)] 
     : [20.5937, 78.9629];
-  const defaultZoom = STATE.myLocation ? 15 : 5;
+  const defaultZoom = STATE.myLocation ? 16 : 5;
 
   try {
     STATE.map = L.map('map', {
       zoomControl: false,
       attributionControl: false,
-      touchZoom: true,
+      // 'center' lets a two-finger pinch zoom the map even when a finger
+      // starts on a marker/HUD pill instead of bare map.
+      touchZoom: 'center',
       doubleClickZoom: true,
+      // Fine snap so pinch-zoom settles smoothly instead of jumping in
+      // half-level steps; FAB taps still move 0.5 per step.
+      zoomSnap: 0.25,
       zoomDelta: 0.5,
-      zoomSnap: 0.5,
+      wheelPxPerZoomLevel: 90,
+      minZoom: 3,
     }).setView(defaultCenter, defaultZoom);
 
     setMapTheme(STATE.mapTheme || 'dark');
@@ -587,8 +619,12 @@ function setMapTheme(theme) {
   const url = layerUrls[theme] || layerUrls.dark;
   const attr = attributions[theme] || attributions.dark;
 
+  // OpenTopoMap only serves tiles up to z17 — higher zooms 404 and the map
+  // goes blank, so cap each source at what it actually has.
+  const layerMaxZoom = { dark: 19, street: 19, satellite: 19, topo: 17 };
+
   STATE.tileLayer = L.tileLayer(url, {
-    maxZoom: 19,
+    maxZoom: layerMaxZoom[theme] || 19,
     subdomains: theme === 'topo' ? 'abc' : '',
     attribution: attr
   }).addTo(STATE.map);
@@ -1145,6 +1181,34 @@ function handleServerMessage(msg) {
       break;
     }
 
+    // A friend saw MY SOS — update the ack counter on the sender panel
+    case 'SOS_ACK': {
+      if (msg.targetUserId === STATE.myId) {
+        handleMySosAck(msg);
+      }
+      break;
+    }
+
+    // Someone in the room marked themselves safe after an SOS
+    case 'SAFE_ALERT': {
+      const safeName = msg.name || 'A friend';
+      if (msg.userId === STATE.myId) break;
+      hideAckPanel();
+      showToast(`✅ ${safeName} is SAFE!`, 'success', 5000);
+      if (navigator.vibrate) navigator.vibrate([80, 60, 80]);
+      logSafeActivity(safeName, false);
+      // If their SOS alarm screen is open, stand down automatically
+      if (msg.userId === STATE.currentSosAlertUserId) {
+        STATE.currentSosAlertUserId = null;
+        const alertOverlay = document.getElementById('sosAlertOverlay');
+        if (alertOverlay && !alertOverlay.classList.contains('hidden')) {
+          alertOverlay.classList.add('hidden');
+          stopEmergencySiren();
+        }
+      }
+      break;
+    }
+
     case 'ping':
     case 'PING_YOU':
       if (STATE.ws?.readyState === WebSocket.OPEN) {
@@ -1636,7 +1700,7 @@ function initSosButton() {
   btn.addEventListener('touchcancel', cancelSos);
 }
 
-function triggerSOS() {
+function triggerSOS(auto = false) {
   // Try to get location: live > cached localStorage
   let loc = STATE.myLocation;
   if (!loc) {
@@ -1659,6 +1723,7 @@ function triggerSOS() {
     lat: loc.lat,
     lng: loc.lng,
     locType: loc.type || loc.locType || 'gps',
+    auto,
     timestamp: Date.now()
   };
 
@@ -1687,10 +1752,14 @@ function triggerSOS() {
   // Haptic feedback on mobile
   if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 400]);
 
-  showToast('🚨 SOS sent to all friends in the room!', 'error', 5000);
+  showToast(auto ? '⏰ Auto-SOS sent — Safety Watch expired!' : '🚨 SOS sent to all friends in the room!', 'error', 5000);
   logSosActivity({ name: STATE.myName, lat: loc.lat, lng: loc.lng, timestamp: Date.now(), self: true });
   document.getElementById('sosPanicBtn').querySelector('#sosBtnText').textContent = 'SOS';
   document.getElementById('sosPanicBtn').classList.remove('held');
+
+  // Show the sender panel: friends acknowledge + "I'm Safe" check-in
+  resetAckPanel();
+  showAckPanel(auto);
 
   // Auto-capture evidence photos (front then back camera) and send to friends
   captureSosEvidencePhotos(loc);
@@ -1991,9 +2060,25 @@ function showSosAlert(msg) {
   const overlay = document.getElementById('sosAlertOverlay');
   const text = document.getElementById('sosAlertText');
   const coordsEl = document.getElementById('sosAlertCoords');
+  STATE.currentSosAlertUserId = msg.userId;
 
   const senderName = msg.name || 'Friend';
-  text.textContent = `${senderName} is in DANGER and needs immediate help!`;
+  const autoSos = msg.auto === true;
+  text.textContent = autoSos
+    ? `${senderName} did NOT check in — Safety Watch sent this SOS automatically!`
+    : `${senderName} is in DANGER and needs immediate help!`;
+
+  // Tell the sender we saw their SOS (server counts acks and informs them)
+  if (STATE.ws && STATE.ws.readyState === WebSocket.OPEN && msg.userId !== STATE.myId) {
+    STATE.ws.send(JSON.stringify({
+      type: 'sos_ack',
+      room: STATE.roomCode,
+      userId: STATE.myId,
+      name: STATE.myName,
+      targetUserId: msg.userId,
+      timestamp: Date.now()
+    }));
+  }
 
   const lat = msg.lat != null ? Number(msg.lat) : null;
   const lng = msg.lng != null ? Number(msg.lng) : null;
@@ -2123,6 +2208,329 @@ function logSosActivity(msg) {
   const time = new Date(msg.timestamp).toLocaleTimeString();
   el.innerHTML = `<strong>🚨 ${msg.self ? 'You sent' : escHtml(msg.name) + ' sent'} an SOS</strong> at ${time}`;
   feed.prepend(el);
+}
+
+function logSafeActivity(name, self) {
+  const feed = document.getElementById('sosActivityFeed');
+  const p = feed.querySelector('.feed-empty');
+  if (p) p.remove();
+  const el = document.createElement('div');
+  el.className = 'sos-feed-item safe';
+  const time = new Date().toLocaleTimeString();
+  el.innerHTML = `<strong>✅ ${self ? 'You are' : escHtml(name) + ' is'} SAFE</strong> — checked in at ${time}`;
+  feed.prepend(el);
+}
+
+// ────────────────────────────────────────────────────────────
+// I'm Safe check-in + SOS acknowledgment count (sender panel)
+// ────────────────────────────────────────────────────────────
+function resetAckPanel() {
+  STATE.ackNames = new Set();
+  const banner = document.getElementById('sosAckBanner');
+  if (banner) banner.classList.remove('acked');
+  const icon = document.getElementById('sosAckIcon');
+  if (icon) icon.textContent = '⏳';
+  const title = document.getElementById('sosAckTitle');
+  if (title) title.textContent = 'SOS sent — waiting for friends…';
+  const detail = document.getElementById('sosAckDetail');
+  if (detail) detail.textContent = 'Friends who see your alert are counted here';
+}
+
+function showAckPanel(autoSos) {
+  const banner = document.getElementById('sosAckBanner');
+  const safeBtn = document.getElementById('sosSafeBtn');
+  if (banner) banner.classList.remove('hidden');
+  if (safeBtn) safeBtn.classList.remove('hidden');
+  if (autoSos) {
+    const title = document.getElementById('sosAckTitle');
+    if (title) title.textContent = '⏰ Auto-SOS sent (Safety Watch expired)';
+  }
+  // Bring the SOS tab forward so the sender sees the panel
+  const sosTabBtn = document.querySelector('[data-tab="tab-sos"]');
+  const sosTab = document.getElementById('tab-sos');
+  if (sosTabBtn && sosTab && !sosTab.classList.contains('active')) sosTabBtn.click();
+}
+
+function hideAckPanel() {
+  document.getElementById('sosAckBanner')?.classList.add('hidden');
+  document.getElementById('sosSafeBtn')?.classList.add('hidden');
+}
+
+function handleMySosAck(msg) {
+  if (msg.ackUserId && msg.ackName) STATE.ackNames.add(msg.ackName);
+  const banner = document.getElementById('sosAckBanner');
+  if (!banner) return;
+  banner.classList.add('acked');
+  const icon = document.getElementById('sosAckIcon');
+  if (icon) icon.textContent = '👀';
+  const count = msg.ackCount || STATE.ackNames.size;
+  const title = document.getElementById('sosAckTitle');
+  if (title) title.textContent = `👥 ${count} friend${count === 1 ? '' : 's'} saw your SOS`;
+  const detail = document.getElementById('sosAckDetail');
+  if (detail) {
+    const names = [...STATE.ackNames].slice(-3).join(', ');
+    detail.textContent = `${names} — help is on the way!`;
+  }
+  if (navigator.vibrate) navigator.vibrate([60, 40, 60]);
+}
+
+async function sendSafeCheckIn() {
+  const payload = {
+    room: STATE.roomCode,
+    userId: STATE.myId,
+    name: STATE.myName,
+    timestamp: Date.now()
+  };
+  let sent = false;
+  if (STATE.ws && STATE.ws.readyState === WebSocket.OPEN) {
+    STATE.ws.send(JSON.stringify({ type: 'safe', ...payload }));
+    sent = true;
+  } else {
+    try {
+      await fetch('/api/safe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        keepalive: true
+      });
+      sent = true;
+    } catch (e) {}
+  }
+  hideAckPanel();
+  showToast(sent ? '✅ You marked yourself SAFE — friends notified.' : '⚠️ No connection — could not notify friends!', sent ? 'success' : 'error', 4500);
+  if (sent && navigator.vibrate) navigator.vibrate([80, 60, 80]);
+  logSafeActivity(STATE.myName, true);
+}
+
+// ────────────────────────────────────────────────────────────
+// Safety Watch — dead-man switch. If you don't check in before
+// the timer runs out, an SOS with your last location fires
+// automatically: the web timer handles the foreground, the
+// native timer (background service) handles locked/closed app.
+// ────────────────────────────────────────────────────────────
+const WATCH_STORAGE_KEY = 'friendpulse_watch';
+const WATCH_GRACE_MS = 30000;
+let watchSelectedMins = 30;
+let watchTimer = null;
+
+function postToNative(data) {
+  try {
+    if (window.ReactNativeWebView) {
+      window.ReactNativeWebView.postMessage(JSON.stringify(data));
+    }
+  } catch (e) {}
+}
+
+function initSafetyFeatures() {
+  document.querySelectorAll('.watch-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      document.querySelectorAll('.watch-chip').forEach(c => c.classList.remove('active'));
+      chip.classList.add('active');
+      watchSelectedMins = parseInt(chip.dataset.mins, 10) || 30;
+    });
+  });
+  document.getElementById('watchArmBtn')?.addEventListener('click', () => armWatch(watchSelectedMins * 60000));
+  document.getElementById('watchCheckInBtn')?.addEventListener('click', checkInWatch);
+  document.getElementById('watchCancelBtn')?.addEventListener('click', () => cancelWatch(false));
+  document.getElementById('sosSafeBtn')?.addEventListener('click', sendSafeCheckIn);
+}
+
+function armWatch(durationMs) {
+  stopWatchTicker();
+  STATE.watch = {
+    expiresAt: Date.now() + durationMs,
+    durationMs,
+    expiredGrace: false
+  };
+  persistWatch();
+  syncWatchToNative();
+  startWatchTicker();
+  updateWatchUi();
+  restoreWatchStatus();
+  showToast(`🛡️ Safety Watch armed — ${Math.round(durationMs / 60000)} min. Check in before it expires!`, 'success', 4500);
+}
+
+function persistWatch() {
+  try {
+    if (STATE.watch) {
+      localStorage.setItem(WATCH_STORAGE_KEY, JSON.stringify({
+        expiresAt: STATE.watch.expiresAt,
+        durationMs: STATE.watch.durationMs
+      }));
+    } else {
+      localStorage.removeItem(WATCH_STORAGE_KEY);
+    }
+  } catch (e) {}
+}
+
+// Keep the native side in sync: it fires the timer when the app is closed.
+// Absolute expiresAt (not remaining) so frequent location updates don't drift.
+function syncWatchToNative() {
+  if (!STATE.watch) {
+    postToNative({ type: 'WATCH_CANCEL' });
+    return;
+  }
+  if (STATE.watch.expiresAt <= Date.now()) return;
+  postToNative({
+    type: 'WATCH_UPDATE',
+    expiresAt: STATE.watch.expiresAt,
+    lat: STATE.myLocation?.lat || 0,
+    lng: STATE.myLocation?.lng || 0
+  });
+}
+
+function startWatchTicker() {
+  stopWatchTicker();
+  watchTimer = setInterval(watchTick, 1000);
+  watchTick();
+}
+
+function stopWatchTicker() {
+  if (watchTimer) clearInterval(watchTimer);
+  watchTimer = null;
+}
+
+function watchTick() {
+  if (!STATE.watch) return;
+  const remaining = STATE.watch.expiresAt - Date.now();
+  if (remaining <= 0) {
+    fireWatchExpired();
+    return;
+  }
+  updateWatchUi(remaining);
+}
+
+function updateWatchUi(remaining) {
+  const idle = document.getElementById('watchIdle');
+  const active = document.getElementById('watchActive');
+  if (!idle || !active) return;
+  if (!STATE.watch) {
+    idle.classList.remove('hidden');
+    active.classList.add('hidden');
+    return;
+  }
+  idle.classList.add('hidden');
+  active.classList.remove('hidden');
+  const rem = remaining != null ? remaining : Math.max(0, STATE.watch.expiresAt - Date.now());
+  const cd = document.getElementById('watchCountdown');
+  if (cd) {
+    cd.textContent = formatWatchRemaining(rem);
+    cd.classList.toggle('urgent', rem < 120000);
+  }
+}
+
+function restoreWatchStatus() {
+  const status = document.getElementById('watchStatus');
+  if (!status) return;
+  status.textContent = 'SOS fires automatically if you don\'t check in';
+  status.classList.remove('expired');
+}
+
+function formatWatchRemaining(ms) {
+  const total = Math.ceil(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const mm = String(m).padStart(2, '0');
+  const ss = String(s).padStart(2, '0');
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+function checkInWatch() {
+  if (!STATE.watch) return;
+  if (STATE.watch.expiredGrace) {
+    // Watch already expired — check-in means "I'm safe, don't fire"
+    cancelWatch(true);
+    return;
+  }
+  armWatch(STATE.watch.durationMs);
+  showToast('✅ Checked in — Safety Watch timer reset!', 'success', 4000);
+}
+
+function cancelWatch(silent) {
+  const wasGrace = STATE.watch?.expiredGrace;
+  stopWatchTicker();
+  STATE.watch = null;
+  persistWatch();
+  postToNative({ type: 'WATCH_CANCEL' });
+  updateWatchUi();
+  if (wasGrace) {
+    // Nothing was sent yet — just confirm safe and stand down
+    sendSafeCheckIn();
+  } else if (!silent) {
+    showToast('Safety Watch cancelled', 'info', 3000);
+  }
+}
+
+function fireWatchExpired() {
+  stopWatchTicker();
+  STATE.watch = null;
+  persistWatch();
+  postToNative({ type: 'WATCH_CANCEL' });
+  updateWatchUi();
+  triggerSOS(true);
+}
+
+// Called from enterApp: resume a ticking watch or handle one that
+// expired while the app was closed.
+async function initWatchFromStorage() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(WATCH_STORAGE_KEY) || 'null'); } catch (e) {}
+  if (!saved || !saved.expiresAt) return;
+
+  const remaining = saved.expiresAt - Date.now();
+  if (remaining > 0) {
+    STATE.watch = { expiresAt: saved.expiresAt, durationMs: saved.durationMs || remaining, expiredGrace: false };
+    syncWatchToNative();
+    startWatchTicker();
+    updateWatchUi();
+    showToast(`🛡️ Safety Watch running — ${formatWatchRemaining(remaining)} left`, 'info', 4000);
+    return;
+  }
+
+  // Timer expired while we were away. If the native service already fired
+  // the auto-SOS (phone was closed), don't fire again — let the user just
+  // confirm they're safe. Otherwise give a short grace before firing here.
+  let nativeFired = false;
+  if (window.ReactNativeWebView) {
+    nativeFired = await new Promise(resolve => {
+      const timeout = setTimeout(() => resolve(false), 800);
+      window.__watchFiredResolved = fired => {
+        clearTimeout(timeout);
+        resolve(!!fired);
+      };
+      postToNative({ type: 'GET_WATCH_FIRED' });
+    });
+  }
+
+  if (nativeFired) {
+    STATE.watch = null;
+    persistWatch();
+    updateWatchUi();
+    showToast('⏰ Safety Watch triggered while you were away — SOS was sent to your friends!', 'error', 8000);
+    resetAckPanel();
+    showAckPanel(true);
+    return;
+  }
+
+  STATE.watch = {
+    expiresAt: Date.now() + WATCH_GRACE_MS,
+    durationMs: saved.durationMs || 30 * 60000,
+    expiredGrace: true
+  };
+  persistWatch();
+  syncWatchToNative();
+  startWatchTicker();
+  updateWatchUi();
+  const status = document.getElementById('watchStatus');
+  if (status) {
+    status.textContent = `⚠️ WATCH EXPIRED — auto-SOS in ${WATCH_GRACE_MS / 1000}s. Check in if you are safe!`;
+    status.classList.add('expired');
+  }
+  showToast(`⏰ Safety Watch expired while you were away — auto-SOS in ${WATCH_GRACE_MS / 1000} seconds!`, 'error', 8000);
+  if (navigator.vibrate) navigator.vibrate([300, 150, 300, 150, 300]);
+  const sosTabBtn = document.querySelector('[data-tab="tab-sos"]');
+  if (sosTabBtn) sosTabBtn.click();
 }
 
 // ────────────────────────────────────────────────────────────
@@ -2392,6 +2800,7 @@ function enterApp(roomCode, myName) {
   // Init map
   initMap();
   initSosButton();
+  initSafetyFeatures();
 
   // Force Leaflet to render correctly after CSS layout settles
   setTimeout(() => { STATE.map?.invalidateSize(); }, 100);
@@ -2424,6 +2833,9 @@ function enterApp(roomCode, myName) {
 
   // Register Web Push notifications so phone rings even when app is closed!
   registerPushNotifications(roomCode, STATE.myId, myName);
+
+  // Resume or clean up any Safety Watch from a previous session
+  initWatchFromStorage();
 
   // Fetch public tunnel URL for sharing (async, non-blocking)
   fetchPublicUrl();

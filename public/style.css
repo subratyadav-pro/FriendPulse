@@ -697,6 +697,123 @@ a { text-decoration: none; }
   font-size: 13px;
 }
 .sos-feed-item strong { color: var(--red); }
+.sos-feed-item.safe {
+  background: rgba(16,185,129,0.1);
+  border-color: rgba(16,185,129,0.3);
+}
+.sos-feed-item.safe strong { color: var(--green); }
+
+/* ── SOS sender panel: ack count + I'm Safe ─────────────── */
+.sos-ack-banner.hidden { display: none; }
+.sos-safe-btn.hidden { display: none; }
+#watchActive.hidden { display: none; }
+.sos-ack-banner {
+  margin: 16px 16px 10px;
+  display: flex; align-items: center; gap: 12px;
+  background: rgba(239,68,68,0.12);
+  border: 1px solid rgba(239,68,68,0.35);
+  border-radius: 16px;
+  padding: 14px;
+  animation: ackPulse 2s infinite;
+}
+.sos-ack-banner.acked {
+  background: rgba(16,185,129,0.1);
+  border-color: rgba(16,185,129,0.4);
+  animation: none;
+}
+@keyframes ackPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.25); }
+  50% { box-shadow: 0 0 18px 2px rgba(239,68,68,0.2); }
+}
+.sos-ack-icon { font-size: 26px; }
+.sos-ack-info h4 { font-size: 14px; font-weight: 800; color: var(--text); }
+.sos-ack-info p { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+.sos-safe-btn {
+  display: block; width: calc(100% - 32px);
+  margin: 0 16px 4px;
+  padding: 15px;
+  background: linear-gradient(135deg, #10b981, #059669);
+  border: none; border-radius: 16px;
+  color: #fff; font-size: 15px; font-weight: 800;
+  letter-spacing: 0.3px;
+  box-shadow: 0 6px 20px rgba(16,185,129,0.35);
+  cursor: pointer;
+  transition: transform 0.15s;
+}
+.sos-safe-btn:active { transform: scale(0.97); }
+
+/* ── Safety Watch (dead-man switch) ─────────────────────── */
+.watch-card {
+  margin: 20px 16px 0;
+  background: var(--bg-card);
+  border: 1px solid rgba(99,102,241,0.35);
+  border-radius: 18px;
+  padding: 16px;
+}
+.watch-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.watch-icon {
+  width: 42px; height: 42px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px;
+  background: rgba(99,102,241,0.15);
+  border: 1px solid rgba(99,102,241,0.4);
+  border-radius: 13px;
+}
+.watch-head h4 { font-size: 15px; font-weight: 800; color: var(--text); }
+.watch-head p { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.watch-chips { display: flex; gap: 8px; margin-bottom: 12px; }
+.watch-chip {
+  flex: 1; padding: 11px 0;
+  background: rgba(255,255,255,0.05);
+  border: 1.5px solid rgba(255,255,255,0.12);
+  border-radius: 12px;
+  color: var(--muted); font-size: 14px; font-weight: 700;
+  cursor: pointer; transition: all 0.15s;
+}
+.watch-chip.active {
+  background: rgba(99,102,241,0.2);
+  border-color: var(--primary);
+  color: var(--text);
+}
+.watch-arm-btn {
+  display: block; width: 100%; padding: 14px;
+  background: linear-gradient(135deg, #6366f1, #4f46e5);
+  border: none; border-radius: 14px;
+  color: #fff; font-size: 14px; font-weight: 800; letter-spacing: 0.3px;
+  box-shadow: 0 6px 18px rgba(99,102,241,0.35);
+  cursor: pointer; transition: transform 0.15s;
+}
+.watch-arm-btn:active { transform: scale(0.97); }
+.watch-note { font-size: 11px; color: var(--muted); text-align: center; margin-top: 10px; }
+.watch-countdown {
+  font-size: 44px; font-weight: 800; text-align: center;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 1px;
+  margin: 4px 0 2px;
+}
+.watch-countdown.urgent { color: var(--red); animation: blink 1s infinite; }
+.watch-status { font-size: 12px; color: var(--muted); text-align: center; margin-bottom: 14px; }
+.watch-status.expired { color: var(--red); font-weight: 700; }
+.watch-actions { display: flex; gap: 10px; }
+.watch-checkin-btn {
+  flex: 2; padding: 14px;
+  background: linear-gradient(135deg, #10b981, #059669);
+  border: none; border-radius: 13px;
+  color: #fff; font-size: 14px; font-weight: 800;
+  cursor: pointer; transition: transform 0.15s;
+}
+.watch-checkin-btn:active { transform: scale(0.97); }
+.watch-cancel-btn {
+  flex: 1; padding: 14px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 13px;
+  color: var(--muted); font-size: 13px; font-weight: 700;
+  cursor: pointer; transition: transform 0.15s;
+}
+.watch-cancel-btn:active { transform: scale(0.97); }
 
 .helplines-grid {
   display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
