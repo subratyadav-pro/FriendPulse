@@ -81,8 +81,13 @@ function broadcastToRoom(roomCode, excludeId, message) {
   if (!room) return;
   const raw = JSON.stringify(message);
   Object.entries(room).forEach(([uid, peer]) => {
-    if (uid !== excludeId && peer.ws.readyState === WebSocket.OPEN)
-      peer.ws.send(raw);
+    try {
+      if (uid !== excludeId && peer && peer.ws && peer.ws.readyState === WebSocket.OPEN) {
+        peer.ws.send(raw);
+      }
+    } catch (err) {
+      console.warn(`[BROADCAST_ERR] Failed sending to ${uid}:`, err.message);
+    }
   });
 }
 
@@ -92,7 +97,11 @@ function broadcastRoomState(roomCode) {
   const members = Object.values(room).map(p => p.data).filter(Boolean);
   const raw = JSON.stringify({ type: 'ROOM_STATE', members });
   Object.values(room).forEach(peer => {
-    if (peer.ws.readyState === WebSocket.OPEN) peer.ws.send(raw);
+    try {
+      if (peer && peer.ws && peer.ws.readyState === WebSocket.OPEN) {
+        peer.ws.send(raw);
+      }
+    } catch (err) {}
   });
 }
 
@@ -458,25 +467,39 @@ wss.on('connection', (ws) => {
       }
     }
 
-    if (msg.type === 'sos' && currentRoom && currentUserId) {
-      const name = rooms[currentRoom]?.[currentUserId]?.data?.name || 'A friend';
+    if ((msg.type === 'sos' || msg.type === 'SOS' || msg.type === 'SOS_ALERT') && (currentRoom || msg.room)) {
+      const roomCode = String(currentRoom || msg.room).toUpperCase().trim();
+      const uid = currentUserId || msg.userId;
+      const name = msg.name || rooms[roomCode]?.[uid]?.data?.name || 'A friend';
       const sosData = {
-        type: 'sos',
-        userId: currentUserId,
+        type: 'SOS_ALERT',
+        userId: uid,
         name,
-        lat: msg.lat,
-        lng: msg.lng,
-        timestamp: Date.now()
+        lat: msg.lat ? Number(msg.lat) : null,
+        lng: msg.lng ? Number(msg.lng) : null,
+        locType: msg.locType || 'gps',
+        timestamp: msg.timestamp || Date.now()
       };
-      broadcastToRoom(currentRoom, currentUserId, sosData);
-      sendSosPushNotifications(currentRoom, currentUserId, sosData);
+      console.log(`[SOS-WS] 🚨 Emergency SOS from ${name} in room ${roomCode}`);
+      broadcastToRoom(roomCode, uid, sosData);
+      try {
+        sendSosPushNotifications(roomCode, uid, sosData);
+      } catch (err) {
+        console.warn('[PUSH-ERR]', err.message);
+      }
     }
 
-    if (msg.type === 'ping' && currentRoom) {
-      const room = rooms[currentRoom];
-      const target = room?.[msg.targetId];
-      if (target?.ws?.readyState === WebSocket.OPEN)
-        target.ws.send(JSON.stringify({ type: 'ping', fromId: currentUserId }));
+    if (msg.type === 'ping') {
+      if (msg.targetId && currentRoom) {
+        const room = rooms[currentRoom];
+        const target = room?.[msg.targetId];
+        if (target?.ws?.readyState === WebSocket.OPEN)
+          target.ws.send(JSON.stringify({ type: 'ping', fromId: currentUserId }));
+      } else {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
+        }
+      }
     }
 
     if (msg.type === 'SYNC_FRIEND_LOCATION' && currentRoom) {
