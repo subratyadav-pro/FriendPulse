@@ -236,7 +236,21 @@ wss.on('connection', (ws) => {
 
       if (!rooms[currentRoom]) rooms[currentRoom] = {};
 
-      // Close previous connection if user is reconnecting
+      // Deduplicate: If someone joins with the same name as an old/offline entry
+      // (e.g. user moved from PC tab to phone or reconnected with new userId),
+      // remove the old ghost entry so it doesn't leave an overlapping ghost marker!
+      Object.entries(rooms[currentRoom]).forEach(([existingUid, peer]) => {
+        if (existingUid !== userId && peer.data?.name && peer.data.name.toLowerCase() === userName.toLowerCase()) {
+          console.log(`[DEDUP] Removing stale duplicate for ${userName} (${existingUid})`);
+          if (peer.ws && peer.ws !== ws) {
+            try { peer.ws.close(); } catch (_) {}
+          }
+          delete rooms[currentRoom][existingUid];
+          broadcastToRoom(currentRoom, null, { type: 'member_left_permanent', userId: existingUid });
+        }
+      });
+
+      // Close previous connection if user is reconnecting with same userId
       if (rooms[currentRoom][userId]?.ws && rooms[currentRoom][userId].ws !== ws) {
         try { rooms[currentRoom][userId].ws.close(); } catch {}
       }

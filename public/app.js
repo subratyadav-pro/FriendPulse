@@ -954,6 +954,23 @@ function updateFriend(uid, data) {
     if (data.lastSeen) STATE.friends[uid].lastSeen = data.lastSeen;
   }
 
+  // Deduplicate: If an older entry with the exact same name exists under a different uid (e.g. from prior tab test),
+  // clean up its old marker so they don't overlap!
+  const currentName = (STATE.friends[uid].name || '').trim().toLowerCase();
+  if (currentName) {
+    Object.keys(STATE.friends).forEach(otherUid => {
+      if (otherUid !== uid && STATE.friends[otherUid]?.name?.trim().toLowerCase() === currentName) {
+        removeFriendMarker(otherUid);
+        if (STATE.distanceLines[otherUid]) {
+          if (STATE.distanceLines[otherUid].line) STATE.map?.removeLayer(STATE.distanceLines[otherUid].line);
+          if (STATE.distanceLines[otherUid].label) STATE.map?.removeLayer(STATE.distanceLines[otherUid].label);
+          delete STATE.distanceLines[otherUid];
+        }
+        delete STATE.friends[otherUid];
+      }
+    });
+  }
+
   // Normalize: server sends lat/lng at top level, locType or locationType
   const lat = data.lat ?? data.location?.lat;
   const lng = data.lng ?? data.location?.lng;
