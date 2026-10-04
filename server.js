@@ -194,6 +194,29 @@ app.post('/api/last-location', (req, res) => {
   res.json({ ok: true });
 });
 
+// HTTP SOS fallback — works even if client's WS is closed/paused
+app.post('/api/sos', (req, res) => {
+  const { room, userId, name, lat, lng, locType, timestamp } = req.body || {};
+  if (!room || !userId) return res.status(400).json({ error: 'Missing fields' });
+  const roomCode = String(room).toUpperCase().trim();
+  const senderName = name || rooms[roomCode]?.[userId]?.data?.name || 'A friend';
+
+  console.log(`[SOS-HTTP] ${senderName} in room ${roomCode} → ${lat}, ${lng}`);
+
+  // Broadcast to all other room members via server WS
+  broadcastToRoom(roomCode, userId, {
+    type: 'SOS_ALERT',
+    userId,
+    name: senderName,
+    lat: lat ? Number(lat) : null,
+    lng: lng ? Number(lng) : null,
+    locType: locType || 'gps',
+    timestamp: timestamp || Date.now()
+  });
+
+  res.json({ ok: true, broadcast: true });
+});
+
 // Explicit permanent leave endpoint (erases user from room)
 app.post('/api/leave-room', (req, res) => {
   const { room, userId } = req.body || {};

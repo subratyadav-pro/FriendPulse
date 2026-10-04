@@ -1285,18 +1285,58 @@ function initSosButton() {
 }
 
 function triggerSOS() {
-  if (!STATE.myLocation || !STATE.ws || STATE.ws.readyState !== WebSocket.OPEN) {
-    showToast('⚠️ Cannot send SOS — location or connection unavailable', 'error');
+  // Try to get location: live > cached localStorage
+  let loc = STATE.myLocation;
+  if (!loc) {
+    try {
+      const cached = localStorage.getItem('friendpulse_last_loc');
+      if (cached) loc = JSON.parse(cached);
+    } catch (_) {}
+  }
+
+  if (!loc || loc.lat == null) {
+    showToast('⚠️ Cannot send SOS — no location available. Enable GPS and try again.', 'error', 4000);
     return;
   }
-  STATE.ws.send(JSON.stringify({
+
+  const sosPayload = {
     type: 'SOS',
-    lat: STATE.myLocation.lat,
-    lng: STATE.myLocation.lng,
-    locType: STATE.myLocation.type
-  }));
+    room: STATE.roomCode,
+    userId: STATE.myId,
+    name: STATE.myName,
+    lat: loc.lat,
+    lng: loc.lng,
+    locType: loc.type || loc.locType || 'gps',
+    timestamp: Date.now()
+  };
+
+  let sent = false;
+
+  // Primary: send via WebSocket if open
+  if (STATE.ws && STATE.ws.readyState === WebSocket.OPEN) {
+    STATE.ws.send(JSON.stringify(sosPayload));
+    sent = true;
+  }
+
+  // Fallback: always send via HTTP beacon so it works even if WS is closed/paused
+  fetch('/api/sos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(sosPayload),
+    keepalive: true
+  }).then(r => r.json()).then(d => {
+    if (!sent) {
+      showToast('🚨 SOS sent via network fallback!', 'error', 5000);
+    }
+  }).catch(() => {
+    if (!sent) showToast('⚠️ SOS failed — no connection. Call 112 directly!', 'error', 6000);
+  });
+
+  // Haptic feedback on mobile
+  if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 400]);
+
   showToast('🚨 SOS sent to all friends in the room!', 'error', 5000);
-  logSosActivity({ name: STATE.myName, lat: STATE.myLocation.lat, lng: STATE.myLocation.lng, timestamp: Date.now(), self: true });
+  logSosActivity({ name: STATE.myName, lat: loc.lat, lng: loc.lng, timestamp: Date.now(), self: true });
   document.getElementById('sosPanicBtn').querySelector('#sosBtnText').textContent = 'SOS';
   document.getElementById('sosPanicBtn').classList.remove('held');
 }
