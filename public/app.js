@@ -90,35 +90,64 @@ async function getIPLocation() {
   try {
     const res = await fetch('/api/ip-location');
     const data = await res.json();
-    if (data.success) {
+    if (data.success && data.latitude != null && data.longitude != null) {
       return {
-        lat: data.latitude,
-        lng: data.longitude,
+        lat: Number(data.latitude),
+        lng: Number(data.longitude),
         type: 'ip',
         city: data.city,
         country: data.country,
         accuracy: null,
-        label: `${data.city || ''}, ${data.country || ''} (IP location – city level only)`
+        label: `${data.city || 'City'}, ${data.country || ''} (Network/IP location)`
       };
     }
-    return null;
-  } catch (e) {
-    return null;
-  }
+  } catch (e) {}
+
+  // Direct client-side fallback if server IP api didn't yield coords (e.g. local IP)
+  try {
+    const res2 = await fetch('https://ipapi.co/json/');
+    const d2 = await res2.json();
+    if (d2.latitude != null && d2.longitude != null) {
+      return {
+        lat: Number(d2.latitude),
+        lng: Number(d2.longitude),
+        type: 'ip',
+        city: d2.city,
+        country: d2.country_name,
+        accuracy: null,
+        label: `${d2.city || 'City'}, ${d2.country_name || ''} (Network/IP location)`
+      };
+    }
+  } catch (e2) {}
+
+  return null;
 }
 
-function startLocationTracking() {
-  updateMyLocationCard('detecting', 'Getting your GPS…');
+let gpsRetryInterval = null;
 
-  // Immediately get IP location so distances can be calculated right away
+function startLocationTracking() {
+  updateMyLocationCard('detecting', 'Getting your location…');
+
+  // 1. Immediately restore cached last known location if available
+  try {
+    const cached = localStorage.getItem('friendpulse_last_loc');
+    if (cached) {
+      const loc = JSON.parse(cached);
+      if (loc && loc.lat != null && loc.lng != null && !STATE.myLocation) {
+        onMyLocationUpdate({ ...loc, label: `Cached position · ${loc.label || ''}` });
+      }
+    }
+  } catch (e) {}
+
+  // 2. Fetch IP location right away so user is locatable even if GPS is off
   getIPLocation().then(ipLoc => {
     if (ipLoc && (!STATE.myLocation || STATE.myLocation.type !== 'gps')) {
       onMyLocationUpdate(ipLoc);
     }
   });
 
+  // 3. Try high-accuracy device GPS
   if (navigator.geolocation) {
-    // Try GPS
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         const loc = {
@@ -130,21 +159,42 @@ function startLocationTracking() {
           label: `GPS • ±${Math.round(pos.coords.accuracy)}m accuracy`
         };
         onMyLocationUpdate(loc);
+        if (gpsRetryInterval) { clearInterval(gpsRetryInterval); gpsRetryInterval = null; }
       },
       async (err) => {
-        console.warn('GPS denied/failed:', err.message);
+        console.warn('GPS off or denied:', err.message);
         const ipLoc = await getIPLocation();
         if (ipLoc) {
           onMyLocationUpdate(ipLoc);
-          showToast('📡 Using approximate IP location for PC/device', 'info', 4000);
+          showToast('📡 GPS off — using approximate Network/IP location so friends can find you', 'info', 4500);
         } else {
           updateMyLocationCard('none', 'Location unavailable');
         }
+
+        // Retry GPS every 20s in case user toggles GPS on
+        if (!gpsRetryInterval) {
+          gpsRetryInterval = setInterval(() => {
+            navigator.geolocation.getCurrentPosition((pos) => {
+              const loc = {
+                lat: pos.coords.latitude,
+                lng: pos.coords.longitude,
+                type: 'gps',
+                accuracy: Math.round(pos.coords.accuracy),
+                speed: pos.coords.speed,
+                label: `GPS • ±${Math.round(pos.coords.accuracy)}m accuracy`
+              };
+              onMyLocationUpdate(loc);
+              clearInterval(gpsRetryInterval);
+              gpsRetryInterval = null;
+              showToast('🎯 High-accuracy GPS active!', 'success', 3000);
+            }, () => {}, { enableHighAccuracy: true, timeout: 5000 });
+          }, 20000);
+        }
       },
-      { enableHighAccuracy: true, timeout: 6000, maximumAge: 10000 }
+      { enableHighAccuracy: true, timeout: 7000, maximumAge: 10000 }
     );
 
-    // Watch continuously for GPS movements
+    // Watch continuously for movements
     STATE.locationWatchId = navigator.geolocation.watchPosition(
       (pos) => {
         onMyLocationUpdate({
@@ -173,6 +223,18 @@ function onMyLocationUpdate(loc) {
   STATE.myLocation = loc;
   updateMyLocationCard(loc.type, loc.label || `${loc.type.toUpperCase()} location`);
   updateMapHud(loc.speed, loc.accuracy, loc.type === 'gps');
+
+  // Save last known location to localStorage
+  try {
+    localStorage.setItem('friendpulse_last_loc', JSON.stringify({
+      lat: loc.lat,
+      lng: loc.lng,
+      type: loc.type,
+      accuracy: loc.accuracy,
+      city: loc.city,
+      savedAt: Date.now()
+    }));
+  } catch (e) {}
 
   // Update my map marker & center map on user
   if (STATE.map) {
@@ -214,6 +276,32 @@ function onMyLocationUpdate(loc) {
     }));
   }
 }
+
+// Beacon sent before tab unloads or backgrounded to keep location persistent
+function sendLastLocationBeacon() {
+  if (!STATE.roomCode || !STATE.myId || !STATE.myLocation) return;
+  const payload = JSON.stringify({
+    room: STATE.roomCode,
+    userId: STATE.myId,
+    name: STATE.myName,
+    lat: STATE.myLocation.lat,
+    lng: STATE.myLocation.lng,
+    locationType: STATE.myLocation.type,
+    accuracy: STATE.myLocation.accuracy
+  });
+  if (navigator.sendBeacon) {
+    navigator.sendBeacon('/api/last-location', new Blob([payload], { type: 'application/json' }));
+  } else {
+    fetch('/api/last-location', {
+      method: 'POST',
+      body: payload,
+      headers: { 'Content-Type': 'application/json' },
+      keepalive: true
+    }).catch(() => {});
+  }
+}
+window.addEventListener('beforeunload', sendLastLocationBeacon);
+window.addEventListener('pagehide', sendLastLocationBeacon);
 
 function updateMyLocationCard(type, label) {
   const icon = document.getElementById('myLocIcon');
@@ -428,9 +516,12 @@ function addOrUpdateFriendMarker(userId, friend) {
   if (isNaN(numLat) || isNaN(numLng)) return;
 
   const color = avatarColor(userId);
+  const isOnline = friend.isOnline !== false;
   const isGps = friend.location.locType === 'gps';
-  const borderClass = isGps ? 'gps-border' : 'ip-border';
-  const borderColor = isGps ? 'var(--green)' : 'var(--orange)';
+  const borderClass = !isOnline ? 'offline-border' : isGps ? 'gps-border' : 'ip-border';
+  const borderColor = !isOnline ? '#64748b' : isGps ? 'var(--green)' : 'var(--orange)';
+  const statusLabel = !isOnline ? ' (Away)' : '';
+  const nameClass = !isOnline ? 'friend-marker-name offline' : 'friend-marker-name';
 
   const icon = L.divIcon({
     className: '',
@@ -438,7 +529,7 @@ function addOrUpdateFriendMarker(userId, friend) {
     iconAnchor: [22, 44],
     html: `<div class="friend-marker-wrap">
       <div class="friend-marker-inner ${borderClass}" style="background:${color}">${initial(friend.name)}</div>
-      <div class="friend-marker-name" style="border-color:${borderColor}">${friend.name}</div>
+      <div class="${nameClass}" style="border-color:${borderColor}">${escHtml(friend.name)}${statusLabel}</div>
     </div>`
   });
 
@@ -740,7 +831,8 @@ function handleServerMessage(msg) {
           lat: msg.lat,
           lng: msg.lng,
           locType: msg.locationType || msg.locType || 'gps',
-          accuracy: msg.accuracy
+          accuracy: msg.accuracy,
+          isOnline: true
         });
         renderFriendsList();
         renderBottomStrip();
@@ -760,22 +852,66 @@ function handleServerMessage(msg) {
           lat: msg.location?.lat,
           lng: msg.location?.lng,
           locType: msg.location?.locType || 'gps',
-          accuracy: msg.location?.accuracy
+          accuracy: msg.location?.accuracy,
+          isOnline: true
         });
         renderFriendsList();
         renderBottomStrip();
       }
       break;
 
+    // Friend disconnected temporarily (closed app, tab, or locked screen)
+    case 'member_status': {
+      if (msg.userId && msg.userId !== STATE.myId) {
+        updateFriend(msg.userId, {
+          id: msg.userId,
+          name: msg.name,
+          isOnline: msg.isOnline,
+          lastSeen: msg.lastSeen || Date.now(),
+          lat: msg.lat,
+          lng: msg.lng,
+          locType: msg.locationType
+        });
+        renderFriendsList();
+        renderBottomStrip();
+        const fName = STATE.friends[msg.userId]?.name || 'Friend';
+        if (msg.isOnline === false) {
+          showToast(`📱 ${fName} closed the app (last known location pinned)`, 'info', 3500);
+        } else if (msg.isOnline === true) {
+          showToast(`🟢 ${fName} is back online!`, 'success', 2500);
+        }
+      }
+      break;
+    }
+
+    // Legacy temporary disconnect event: keep location pinned, do NOT remove marker
     case 'left':
     case 'FRIEND_LEFT':
       if (STATE.friends[msg.userId]) {
+        STATE.friends[msg.userId].isOnline = false;
+        STATE.friends[msg.userId].lastSeen = Date.now();
+        if (STATE.friends[msg.userId].location) {
+          addOrUpdateFriendMarker(msg.userId, STATE.friends[msg.userId]);
+        }
+        renderFriendsList();
+        renderBottomStrip();
+      }
+      break;
+
+    // Friend explicitly left the room permanently: erase their marker and location
+    case 'member_left_permanent':
+      if (STATE.friends[msg.userId]) {
         const leftName = STATE.friends[msg.userId].name;
         removeFriendMarker(msg.userId);
+        if (STATE.distanceLines[msg.userId]) {
+          if (STATE.distanceLines[msg.userId].line) STATE.map?.removeLayer(STATE.distanceLines[msg.userId].line);
+          if (STATE.distanceLines[msg.userId].label) STATE.map?.removeLayer(STATE.distanceLines[msg.userId].label);
+          delete STATE.distanceLines[msg.userId];
+        }
         delete STATE.friends[msg.userId];
         renderFriendsList();
         renderBottomStrip();
-        showToast(`👋 ${leftName} left the room`, 'info');
+        showToast(`🛑 ${leftName} left the room permanently`, 'info', 4000);
       }
       break;
 
@@ -805,10 +941,17 @@ function handleServerMessage(msg) {
 
 function updateFriend(uid, data) {
   if (!STATE.friends[uid]) {
-    STATE.friends[uid] = { name: data.name || 'Friend', location: null, marker: null, lastSeen: Date.now() };
+    STATE.friends[uid] = {
+      name: data.name || 'Friend',
+      location: null,
+      marker: null,
+      isOnline: data.isOnline !== false,
+      lastSeen: data.lastSeen || Date.now()
+    };
   } else {
     STATE.friends[uid].name = data.name || STATE.friends[uid].name;
-    STATE.friends[uid].lastSeen = Date.now();
+    if (data.isOnline !== undefined) STATE.friends[uid].isOnline = data.isOnline !== false;
+    if (data.lastSeen) STATE.friends[uid].lastSeen = data.lastSeen;
   }
 
   // Normalize: server sends lat/lng at top level, locType or locationType
@@ -817,9 +960,10 @@ function updateFriend(uid, data) {
   const locType = data.locType || data.locationType || data.location?.locType || 'gps';
   const accuracy = data.accuracy ?? data.location?.accuracy;
 
-  if (lat != null) {
+  if (lat != null && !isNaN(Number(lat)) && lng != null && !isNaN(Number(lng))) {
     STATE.friends[uid].location = {
-      lat: Number(lat), lng: Number(lng),
+      lat: Number(lat),
+      lng: Number(lng),
       locType,
       accuracy,
       city: data.city || data.location?.city,
@@ -867,11 +1011,13 @@ function renderFriendsList() {
   const container = document.getElementById('friendsList');
   const noState = document.getElementById('noFriendsState');
   const badge = document.getElementById('memberCountBadge');
-  const count = Object.keys(STATE.friends).length;
+  const entries = Object.entries(STATE.friends);
+  const totalCount = entries.length;
+  const onlineCount = entries.filter(([_, f]) => f.isOnline !== false).length;
 
-  badge.textContent = `${count} online`;
+  badge.textContent = `${onlineCount} active · ${totalCount} in room`;
 
-  if (count === 0) {
+  if (totalCount === 0) {
     noState.style.display = 'block';
     container.innerHTML = '';
     container.appendChild(noState);
@@ -879,20 +1025,24 @@ function renderFriendsList() {
   }
   noState.style.display = 'none';
 
-  container.innerHTML = Object.entries(STATE.friends).map(([uid, f]) => {
+  container.innerHTML = entries.map(([uid, f]) => {
     const hasLoc = f.location && f.location.lat != null;
     const dist = calculateFriendDistance(f);
     const locType = f.location?.locType || 'unknown';
-    const locLabel = locType === 'gps' ? '📍 GPS' : locType === 'ip' ? '🌐 IP (city-level)' : '❓ No location';
-    const locClass = locType === 'gps' ? 'fc-gps' : locType === 'ip' ? 'fc-ip' : 'fc-unknown';
+    const isOnline = f.isOnline !== false;
+    const locLabel = !isOnline
+      ? '⏸️ Offline (Last known location pinned)'
+      : locType === 'gps' ? '📍 GPS (active live)' : locType === 'ip' ? '🌐 IP (city-level)' : '❓ Locating…';
+    const locClass = !isOnline ? 'fc-unknown' : locType === 'gps' ? 'fc-gps' : locType === 'ip' ? 'fc-ip' : 'fc-unknown';
     const color = avatarColor(uid);
     const ago = f.lastSeen ? timeAgo(f.lastSeen) : '';
+    const statusDot = isOnline ? '🟢' : '⚪';
 
     return `
-      <div class="friend-card" onclick="openFriendDetail('${uid}')">
+      <div class="friend-card" onclick="openFriendDetail('${uid}')" style="${!isOnline ? 'opacity:0.86; border-color:rgba(255,255,255,0.08);' : ''}">
         <div class="fc-avatar" style="background:${color}">${initial(f.name)}</div>
         <div class="fc-info">
-          <h4>${escHtml(f.name)}</h4>
+          <h4>${escHtml(f.name)} <span style="font-size:11px;font-weight:600;color:${isOnline ? 'var(--green)' : '#94a3b8'};">${statusDot} ${isOnline ? 'Online' : 'Away'}</span></h4>
           <div class="fc-dist">📏 ${dist}${ago ? ' · ' + ago : ''}</div>
           <div class="fc-loc-type ${locClass}">${locLabel}</div>
         </div>
@@ -914,14 +1064,15 @@ function renderBottomStrip() {
     const hasLoc = f.location && f.location.lat != null;
     const dist = calculateFriendDistance(f);
     const color = avatarColor(uid);
+    const isOnline = f.isOnline !== false;
     const isGps = f.location?.locType === 'gps';
-    const accClass = !hasLoc ? 'acc-none' : isGps ? 'acc-gps' : 'acc-ip';
+    const accClass = !hasLoc || !isOnline ? 'acc-none' : isGps ? 'acc-gps' : 'acc-ip';
 
     return `
-      <div class="friend-strip-chip" onclick="focusFriendOnMap('${uid}')">
+      <div class="friend-strip-chip" onclick="focusFriendOnMap('${uid}')" style="${!isOnline ? 'opacity:0.8;' : ''}">
         <div class="strip-avatar" style="background:${color}">${initial(f.name)}</div>
         <div class="strip-info">
-          <h4>${escHtml(f.name)}</h4>
+          <h4>${escHtml(f.name)}${!isOnline ? ' (Away)' : ''}</h4>
           <p>${dist}</p>
         </div>
         <div class="acc-dot ${accClass}"></div>
@@ -939,21 +1090,27 @@ function openFriendDetail(uid) {
   const hasLoc = f.location && f.location.lat != null;
   const dist = calculateFriendDistance(f);
   const locType = f.location?.locType || 'unknown';
-  const locLabel = locType === 'gps' ? '📍 GPS (high accuracy)' : locType === 'ip' ? '🌐 IP-based (city level)' : 'No location';
-  const locBadgeClass = locType === 'gps' ? 'fc-gps' : locType === 'ip' ? 'fc-ip' : 'fc-unknown';
+  const isOnline = f.isOnline !== false;
+  const locLabel = !isOnline
+    ? '⏸️ Offline (Last known location)'
+    : locType === 'gps' ? '📍 GPS (high accuracy)' : locType === 'ip' ? '🌐 IP-based (city level)' : 'No location';
+  const locBadgeClass = !isOnline ? 'fc-unknown' : locType === 'gps' ? 'fc-gps' : locType === 'ip' ? 'fc-ip' : 'fc-unknown';
   const color = avatarColor(uid);
   const coordText = hasLoc
     ? `${Number(f.location.lat).toFixed(5)}, ${Number(f.location.lng).toFixed(5)}`
     : 'Not available';
   const accText = f.location?.accuracy ? `±${f.location.accuracy}m` : f.location?.city ? f.location.city : '—';
   const ago = f.lastSeen ? timeAgo(f.lastSeen) : '—';
+  const statusHtml = isOnline
+    ? '<span style="color:var(--green);font-weight:700;">🟢 Active now</span>'
+    : '<span style="color:#94a3b8;font-weight:700;">⚪ Away (app closed)</span>';
 
   document.getElementById('detailSheetBody').innerHTML = `
     <div class="sheet-profile-row">
       <div class="sheet-avatar" style="background:${color}">${initial(f.name)}</div>
       <div class="sheet-profile-info">
         <h3>${escHtml(f.name)}</h3>
-        <p>Last update: ${ago}</p>
+        <p>${statusHtml} · Last seen: ${ago}</p>
         <div class="sheet-loc-type-badge fc-loc-type ${locBadgeClass}">${locLabel}</div>
       </div>
     </div>
@@ -969,7 +1126,7 @@ function openFriendDetail(uid) {
       </div>
       <div class="info-chip">
         <div class="chip-label">COORDS</div>
-        <div class="chip-val" style="font-size:10px">${hasLoc ? `${f.location.lat.toFixed(4)}, ${f.location.lng.toFixed(4)}` : '—'}</div>
+        <div class="chip-val" style="font-size:10px">${hasLoc ? `${Number(f.location.lat).toFixed(4)}, ${Number(f.location.lng).toFixed(4)}` : '—'}</div>
       </div>
     </div>
 
@@ -977,15 +1134,17 @@ function openFriendDetail(uid) {
       ${hasLoc ? `
         <button class="sheet-btn sheet-btn-primary" onclick="navigateTo(${f.location.lat},${f.location.lng})">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
-          Navigate to ${escHtml(f.name)}
+          Navigate to ${escHtml(f.name)}'s Position
         </button>
-        <button class="sheet-btn sheet-btn-ghost" title="Ping for fresh location" onclick="pingFriend('${uid}')">
-          ⚡
-        </button>
+        ${isOnline ? `
+          <button class="sheet-btn sheet-btn-ghost" title="Ping for fresh location" onclick="pingFriend('${uid}')">
+            ⚡
+          </button>
+        ` : ''}
       ` : `
         <div style="color:var(--muted);font-size:13px;text-align:center;padding:10px 0;">
           📡 Waiting for ${escHtml(f.name)}'s location…<br>
-          <span style="font-size:12px">They may have GPS turned off. Ask them to enable location or allow IP fallback.</span>
+          <span style="font-size:12px">They may have GPS turned off. Approximate location will appear once available.</span>
         </div>
       `}
     </div>
@@ -1344,17 +1503,99 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(() => banner.remove(), 5000);
   }
 
+// ── Leave Room Modal Logic ───────────────────────────────
+function openLeaveModal() {
+  const modal = document.getElementById('leaveModalOverlay');
+  const codeEl = document.getElementById('leaveModalRoomCode');
+  if (codeEl) codeEl.textContent = STATE.roomCode || 'Room';
+  if (modal) modal.classList.remove('hidden');
+}
+
+function closeLeaveModal() {
+  const modal = document.getElementById('leaveModalOverlay');
+  if (modal) modal.classList.add('hidden');
+}
+
+function leaveTemporarily() {
+  // Save last known location before closing
+  sendLastLocationBeacon();
+  if (STATE.ws) {
+    try { STATE.ws.close(); } catch {}
+  }
+  if (STATE.locationWatchId != null) {
+    navigator.geolocation.clearWatch(STATE.locationWatchId);
+    STATE.locationWatchId = null;
+  }
+  if (STATE.wsReconnectTimer) clearTimeout(STATE.wsReconnectTimer);
+
+  closeLeaveModal();
+  document.getElementById('appScreen').classList.remove('active');
+  document.getElementById('onboardScreen').classList.add('active');
+  history.replaceState(null, '', window.location.pathname);
+  showToast('⏸️ Radar closed. Your friends can still see your last location.', 'info', 4500);
+}
+
+function leavePermanently() {
+  const code = STATE.roomCode;
+  const uid = STATE.myId;
+
+  // 1. Notify peers via WebSocket
+  if (STATE.ws && STATE.ws.readyState === WebSocket.OPEN) {
+    STATE.ws.send(JSON.stringify({
+      type: 'leave_permanent',
+      room: code,
+      userId: uid
+    }));
+    try { STATE.ws.close(); } catch {}
+  }
+
+  // 2. Call HTTP leave-room endpoint for permanent removal guarantee
+  const payload = JSON.stringify({ room: code, userId: uid });
+  if (navigator.sendBeacon) {
+    navigator.sendBeacon('/api/leave-room', new Blob([payload], { type: 'application/json' }));
+  } else {
+    fetch('/api/leave-room', {
+      method: 'POST',
+      body: payload,
+      headers: { 'Content-Type': 'application/json' },
+      keepalive: true
+    }).catch(() => {});
+  }
+
+  // 3. Clear stored room from localStorage
+  try {
+    localStorage.removeItem('friendpulse_last_room');
+    const rejoinCard = document.getElementById('rejoinCard');
+    if (rejoinCard) rejoinCard.classList.add('hidden');
+  } catch (e) {}
+
+  if (STATE.locationWatchId != null) {
+    navigator.geolocation.clearWatch(STATE.locationWatchId);
+    STATE.locationWatchId = null;
+  }
+  if (STATE.wsReconnectTimer) clearTimeout(STATE.wsReconnectTimer);
+
+  // Clear friends markers
+  Object.values(STATE.friends).forEach(f => {
+    if (f.marker && STATE.map) STATE.map.removeLayer(f.marker);
+  });
+  STATE.friends = {};
+
+  closeLeaveModal();
+  document.getElementById('appScreen').classList.remove('active');
+  document.getElementById('onboardScreen').classList.add('active');
+  history.replaceState(null, '', window.location.pathname);
+  showToast('🛑 You left the room permanently. You are no longer locatable.', 'success', 5000);
+}
+
   // ── App Controls ─────────────────────────────────────────
-  document.getElementById('backToOnboardBtn').addEventListener('click', () => {
-    if (!confirm('Leave the room?')) return;
-    if (STATE.ws) STATE.ws.close();
-    if (STATE.locationWatchId != null) navigator.geolocation.clearWatch(STATE.locationWatchId);
-    if (STATE.wsReconnectTimer) clearTimeout(STATE.wsReconnectTimer);
-    Object.values(STATE.friends).forEach(f => { if (f.marker && STATE.map) STATE.map.removeLayer(f.marker); });
-    STATE.friends = {};
-    document.getElementById('appScreen').classList.remove('active');
-    document.getElementById('onboardScreen').classList.add('active');
-    history.replaceState(null, '', window.location.pathname);
+  document.getElementById('backToOnboardBtn')?.addEventListener('click', openLeaveModal);
+  document.getElementById('leaveRoomModalBtn')?.addEventListener('click', openLeaveModal);
+  document.getElementById('btnTempLeave')?.addEventListener('click', leaveTemporarily);
+  document.getElementById('btnPermLeave')?.addEventListener('click', leavePermanently);
+  document.getElementById('btnCancelLeave')?.addEventListener('click', closeLeaveModal);
+  document.getElementById('leaveModalOverlay')?.addEventListener('click', (e) => {
+    if (e.target.id === 'leaveModalOverlay') closeLeaveModal();
   });
 
   document.getElementById('shareRoomBtn')?.addEventListener('click', shareRoom);

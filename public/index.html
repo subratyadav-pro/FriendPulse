@@ -184,6 +184,9 @@
           <button id="snapGpsBtn" class="room-action-btn" style="background:linear-gradient(135deg, #10b981, #059669); color:#fff; font-weight:700;">
             🎯 Snap to Phone (0m)
           </button>
+          <button id="leaveRoomModalBtn" class="room-action-btn" style="background:rgba(239, 68, 68, 0.12); border:1px solid rgba(239, 68, 68, 0.3); color:#fca5a5;">
+            🚪 Leave Room
+          </button>
         </div>
 
         <!-- Public URL row — shown once localtunnel is ready -->
@@ -307,6 +310,27 @@
       <p id="sosAlertText">A friend is in danger!</p>
       <button id="sosAlertNavigateBtn" class="btn-primary">Open Location in Maps</button>
       <button id="sosAlertDismissBtn" class="btn-dismiss">Dismiss</button>
+    </div>
+  </div>
+
+  <!-- Leave Room Options Modal -->
+  <div id="leaveModalOverlay" class="leave-modal-overlay hidden">
+    <div class="leave-modal-box">
+      <div class="leave-modal-icon">🚪</div>
+      <h3 style="font-size: 19px; font-weight: 800; color: #fff; margin-bottom: 6px;">Leave Room</h3>
+      <p class="leave-modal-sub" style="font-size: 13px; color: var(--muted); margin-bottom: 18px;">Choose how you want to exit <strong id="leaveModalRoomCode" style="color:#fff;">—</strong></p>
+      
+      <button id="btnTempLeave" class="leave-option-btn temp">
+        <div class="opt-title">⏸️ Close Radar (Temporary)</div>
+        <div class="opt-desc">Keep your last location visible so friends can still locate you. You can rejoin anytime.</div>
+      </button>
+      
+      <button id="btnPermLeave" class="leave-option-btn perm">
+        <div class="opt-title">🛑 Leave Permanently & Delete Location</div>
+        <div class="opt-desc">Permanently remove you from this room and erase your location marker from friends' maps.</div>
+      </button>
+      
+      <button id="btnCancelLeave" class="btn-dismiss" style="margin-top:14px; cursor:pointer;">Cancel</button>
     </div>
   </div>
 

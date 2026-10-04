@@ -111,8 +111,8 @@ app.get('/api/public-url', (_req, res) => {
   res.json({ url: PUBLIC_URL });
 });
 
-// ─── Background location from native app (no WS needed) ────
-// Native app POSTs here periodically even when app is closed.
+// ─── Background / Last location endpoints ──────────────────
+// Native app POSTs or browser sendBeacon on unload/hide
 app.post('/api/bg-location', (req, res) => {
   const { room, userId, name, lat, lng, locationType, accuracy } = req.body || {};
   if (!room || !userId || lat == null || lng == null) {
@@ -121,28 +121,99 @@ app.post('/api/bg-location', (req, res) => {
   const roomCode = String(room).toUpperCase().trim();
   if (!rooms[roomCode]) rooms[roomCode] = {};
 
-  // Store latest location for this user (upsert — no WS socket)
   if (!rooms[roomCode][userId]) {
-    rooms[roomCode][userId] = { ws: null, data: {} };
+    rooms[roomCode][userId] = { ws: null, isOnline: true, data: {} };
   }
   Object.assign(rooms[roomCode][userId].data, {
-    id: userId, name: name || 'Friend', lat, lng,
+    id: userId, name: name || 'Friend',
+    lat: Number(lat), lng: Number(lng),
     locationType: locationType || 'gps',
     accuracy: accuracy || null,
     lastUpdated: Date.now(),
     isBackground: true,
+    isOnline: true
   });
 
-  // Broadcast to all active WebSocket members in the room
   broadcastToRoom(roomCode, userId, {
     type: 'location',
-    userId, name: name || 'Friend', lat, lng,
+    userId, name: name || 'Friend',
+    lat: Number(lat), lng: Number(lng),
     locationType: locationType || 'gps',
     accuracy: accuracy || null,
     isBackground: true,
+    isOnline: true
   });
 
-  console.log(`[BG] ${name || userId} in room ${roomCode} → ${lat.toFixed(4)}, ${lng.toFixed(4)}`);
+  console.log(`[BG] ${name || userId} in room ${roomCode} → ${Number(lat).toFixed(4)}, ${Number(lng).toFixed(4)}`);
+  res.json({ ok: true });
+});
+
+// Browser beacon on tab close / background: stores last known location
+app.post('/api/last-location', (req, res) => {
+  const { room, userId, name, lat, lng, locationType, accuracy } = req.body || {};
+  if (!room || !userId) return res.status(400).json({ error: 'Missing fields' });
+  const roomCode = String(room).toUpperCase().trim();
+  if (!rooms[roomCode]) rooms[roomCode] = {};
+
+  if (!rooms[roomCode][userId]) {
+    rooms[roomCode][userId] = { ws: null, isOnline: false, data: {} };
+  }
+  const member = rooms[roomCode][userId];
+  member.isOnline = false;
+
+  if (lat != null && lng != null) {
+    Object.assign(member.data, {
+      id: userId,
+      name: name || member.data.name || 'Friend',
+      lat: Number(lat),
+      lng: Number(lng),
+      locationType: locationType || member.data.locationType || 'gps',
+      accuracy: accuracy || member.data.accuracy || null,
+      lastUpdated: Date.now(),
+      lastSeen: Date.now(),
+      isOnline: false
+    });
+  } else {
+    member.data.isOnline = false;
+    member.data.lastSeen = Date.now();
+  }
+
+  broadcastToRoom(roomCode, userId, {
+    type: 'member_status',
+    userId,
+    name: member.data.name || 'Friend',
+    isOnline: false,
+    lastSeen: Date.now(),
+    lat: member.data.lat,
+    lng: member.data.lng,
+    locationType: member.data.locationType,
+    accuracy: member.data.accuracy
+  });
+
+  console.log(`[LAST_LOC] ${member.data.name || userId} closed app/tab in ${roomCode}, location saved`);
+  res.json({ ok: true });
+});
+
+// Explicit permanent leave endpoint (erases user from room)
+app.post('/api/leave-room', (req, res) => {
+  const { room, userId } = req.body || {};
+  if (!room || !userId) return res.status(400).json({ error: 'Missing fields' });
+  const roomCode = String(room).toUpperCase().trim();
+  if (rooms[roomCode] && rooms[roomCode][userId]) {
+    const leftName = rooms[roomCode][userId]?.data?.name || 'Friend';
+    delete rooms[roomCode][userId];
+    if (Object.keys(rooms[roomCode]).length === 0) {
+      delete rooms[roomCode];
+    } else {
+      broadcastToRoom(roomCode, userId, {
+        type: 'member_left_permanent',
+        userId,
+        name: leftName
+      });
+      broadcastRoomState(roomCode);
+    }
+    console.log(`[PERMANENT EXIT] ${leftName} (${userId}) permanently left room ${roomCode}`);
+  }
   res.json({ ok: true });
 });
 
@@ -170,22 +241,43 @@ wss.on('connection', (ws) => {
         try { rooms[currentRoom][userId].ws.close(); } catch {}
       }
 
+      // Preserve any previously cached location if reconnecting
+      const prevData = rooms[currentRoom][userId]?.data || {};
       rooms[currentRoom][userId] = {
         ws,
-        data: { id: userId, name: userName, roomCode: currentRoom, lastUpdated: Date.now(), deviceType: msg.deviceType || 'mobile' }
+        isOnline: true,
+        data: {
+          ...prevData,
+          id: userId,
+          name: userName,
+          roomCode: currentRoom,
+          lastUpdated: Date.now(),
+          lastSeen: Date.now(),
+          isOnline: true,
+          deviceType: msg.deviceType || 'mobile'
+        }
       };
 
-      // Send back active room members only
-      const activeMembers = Object.values(rooms[currentRoom])
-        .filter(p => p.data && p.data.id !== userId && p.ws && p.ws.readyState === WebSocket.OPEN)
-        .map(p => p.data);
+      // Send back ALL members in room (including temporarily offline friends with their last known locations)
+      const allMembers = Object.values(rooms[currentRoom])
+        .filter(p => p.data && p.data.id !== userId)
+        .map(p => ({
+          ...p.data,
+          isOnline: !!(p.ws && p.ws.readyState === WebSocket.OPEN && p.isOnline !== false)
+        }));
 
       ws.send(JSON.stringify({ type: 'JOINED', roomCode: currentRoom, userId }));
-      ws.send(JSON.stringify({ type: 'room_members', members: activeMembers }));
-      ws.send(JSON.stringify({ type: 'ROOM_STATE', members: activeMembers }));
+      ws.send(JSON.stringify({ type: 'room_members', members: allMembers }));
+      ws.send(JSON.stringify({ type: 'ROOM_STATE', members: allMembers }));
 
-      broadcastToRoom(currentRoom, userId, { type: 'joined', userId, name: userName, deviceType: msg.deviceType || 'mobile' });
-      console.log(`[+] ${userName} (${userId}) → room ${currentRoom} (${Object.keys(rooms[currentRoom]).length} active)`);
+      broadcastToRoom(currentRoom, userId, {
+        type: 'joined',
+        userId,
+        name: userName,
+        isOnline: true,
+        deviceType: msg.deviceType || 'mobile'
+      });
+      console.log(`[+] ${userName} (${userId}) → room ${currentRoom} (${Object.keys(rooms[currentRoom]).length} total members)`);
     }
 
     if (msg.type === 'location' && currentRoom && currentUserId) {
@@ -195,18 +287,23 @@ wss.on('connection', (ws) => {
           room[currentUserId].data.name = msg.name.trim();
         }
         Object.assign(room[currentUserId].data, {
-          lat: msg.lat, lng: msg.lng,
-          locationType: msg.locationType,
+          lat: Number(msg.lat),
+          lng: Number(msg.lng),
+          locationType: msg.locationType || 'gps',
           accuracy: msg.accuracy,
           lastUpdated: Date.now(),
+          lastSeen: Date.now(),
+          isOnline: true
         });
         broadcastToRoom(currentRoom, currentUserId, {
           type: 'location',
           userId: currentUserId,
           name: room[currentUserId].data.name || 'Friend',
-          lat: msg.lat, lng: msg.lng,
-          locationType: msg.locationType,
+          lat: Number(msg.lat),
+          lng: Number(msg.lng),
+          locationType: msg.locationType || 'gps',
           accuracy: msg.accuracy,
+          isOnline: true
         });
       }
     }
@@ -225,6 +322,27 @@ wss.on('connection', (ws) => {
         target.ws.send(JSON.stringify({ type: 'ping', fromId: currentUserId }));
     }
 
+    // ── Permanent leave message from client ────────────────
+    if (msg.type === 'leave_permanent' || msg.type === 'LEAVE_PERMANENT') {
+      const roomCode = String(msg.room || currentRoom).toUpperCase().trim();
+      const uid = msg.userId || currentUserId;
+      if (roomCode && rooms[roomCode] && rooms[roomCode][uid]) {
+        const leftName = rooms[roomCode][uid]?.data?.name || 'Friend';
+        delete rooms[roomCode][uid];
+        if (Object.keys(rooms[roomCode]).length === 0) {
+          delete rooms[roomCode];
+        } else {
+          broadcastToRoom(roomCode, uid, {
+            type: 'member_left_permanent',
+            userId: uid,
+            name: leftName
+          });
+          broadcastRoomState(roomCode);
+        }
+        console.log(`[PERMANENT EXIT] ${leftName} (${uid}) permanently left room ${roomCode}`);
+      }
+    }
+
     // ── Legacy protocol (backwards compat) ─────────────────
     if (msg.type === 'JOIN_ROOM') {
       const { roomCode, userId, userData } = msg;
@@ -232,9 +350,11 @@ wss.on('connection', (ws) => {
       currentUserId = userId;
       const userName = userData?.name || 'Friend';
       if (!rooms[currentRoom]) rooms[currentRoom] = {};
+      const prevData = rooms[currentRoom][userId]?.data || {};
       rooms[currentRoom][userId] = {
         ws,
-        data: { ...userData, id: userId, name: userName, roomCode: currentRoom, lastUpdated: Date.now() }
+        isOnline: true,
+        data: { ...prevData, ...userData, id: userId, name: userName, roomCode: currentRoom, lastUpdated: Date.now(), isOnline: true }
       };
       ws.send(JSON.stringify({ type: 'JOINED', roomCode: currentRoom, userId }));
       broadcastRoomState(currentRoom);
@@ -243,11 +363,11 @@ wss.on('connection', (ws) => {
     if (msg.type === 'UPDATE_LOCATION' && currentRoom && currentUserId) {
       const room = rooms[currentRoom];
       if (room?.[currentUserId]) {
-        Object.assign(room[currentUserId].data, msg.location, { lastUpdated: Date.now() });
+        Object.assign(room[currentUserId].data, msg.location, { lastUpdated: Date.now(), isOnline: true });
         broadcastToRoom(currentRoom, currentUserId, {
           type: 'FRIEND_LOCATION_UPDATE',
           userId: currentUserId,
-          location: { ...msg.location, lastUpdated: Date.now() }
+          location: { ...msg.location, lastUpdated: Date.now(), isOnline: true }
         });
       }
     }
@@ -265,18 +385,34 @@ wss.on('connection', (ws) => {
     }
   });
 
+  // When connection closes temporarily (tab closed, backgrounded, network change)
   ws.on('close', () => {
     if (!currentRoom || !currentUserId || !rooms[currentRoom]) return;
-    const name = rooms[currentRoom][currentUserId]?.data?.name || currentUserId;
-    delete rooms[currentRoom][currentUserId];
-    if (Object.keys(rooms[currentRoom]).length === 0) {
-      delete rooms[currentRoom];
-    } else {
-      broadcastToRoom(currentRoom, null, { type: 'left', userId: currentUserId });
-      broadcastToRoom(currentRoom, null, { type: 'FRIEND_LEFT', userId: currentUserId });
-      broadcastRoomState(currentRoom);
+    const member = rooms[currentRoom][currentUserId];
+    if (!member) return;
+    const name = member.data?.name || currentUserId;
+
+    // DO NOT DELETE USER: Mark as temporarily offline/away and retain last known location!
+    member.ws = null;
+    member.isOnline = false;
+    if (member.data) {
+      member.data.isOnline = false;
+      member.data.lastSeen = Date.now();
     }
-    console.log(`[-] ${name} left room ${currentRoom}`);
+
+    // Broadcast member status so friends see them as offline/away, with marker still visible
+    broadcastToRoom(currentRoom, currentUserId, {
+      type: 'member_status',
+      userId: currentUserId,
+      name,
+      isOnline: false,
+      lastSeen: Date.now(),
+      lat: member.data?.lat,
+      lng: member.data?.lng,
+      locationType: member.data?.locationType
+    });
+
+    console.log(`[AWAY] ${name} disconnected temporarily from room ${currentRoom} (location preserved)`);
   });
 });
 
