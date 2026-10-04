@@ -206,6 +206,35 @@ app.post('/api/bg-location', (req, res) => {
   res.json({ ok: true });
 });
 
+// Force sync / snap friend location (e.g. PC using ISP location snapped to mobile GPS)
+app.post('/api/sync-friend-location', (req, res) => {
+  const { room, targetUserId, lat, lng } = req.body || {};
+  if (!room || !targetUserId || lat == null || lng == null) {
+    return res.status(400).json({ error: 'Missing fields' });
+  }
+  const roomCode = String(room).toUpperCase().trim();
+  if (rooms[roomCode] && rooms[roomCode][targetUserId]) {
+    const member = rooms[roomCode][targetUserId];
+    member.data.lat = Number(lat);
+    member.data.lng = Number(lng);
+    member.data.locationType = 'gps';
+    member.data.accuracy = 1;
+    member.data.lastUpdated = Date.now();
+    broadcastToRoom(roomCode, null, {
+      type: 'location',
+      userId: targetUserId,
+      name: member.data.name || 'Friend',
+      lat: Number(lat),
+      lng: Number(lng),
+      locationType: 'gps',
+      accuracy: 1,
+      isOnline: member.isOnline
+    });
+    console.log(`[SNAP] Synced ${member.data.name || targetUserId} to ${lat}, ${lng} in room ${roomCode}`);
+  }
+  res.json({ ok: true });
+});
+
 // Browser beacon on tab close / background: stores last known location
 app.post('/api/last-location', (req, res) => {
   const { room, userId, name, lat, lng, locationType, accuracy } = req.body || {};
@@ -448,6 +477,28 @@ wss.on('connection', (ws) => {
       const target = room?.[msg.targetId];
       if (target?.ws?.readyState === WebSocket.OPEN)
         target.ws.send(JSON.stringify({ type: 'ping', fromId: currentUserId }));
+    }
+
+    if (msg.type === 'SYNC_FRIEND_LOCATION' && currentRoom) {
+      const { targetUserId, lat, lng } = msg;
+      if (rooms[currentRoom]?.[targetUserId]) {
+        const member = rooms[currentRoom][targetUserId];
+        member.data.lat = Number(lat);
+        member.data.lng = Number(lng);
+        member.data.locationType = 'gps';
+        member.data.accuracy = 1;
+        member.data.lastUpdated = Date.now();
+        broadcastToRoom(currentRoom, null, {
+          type: 'location',
+          userId: targetUserId,
+          name: member.data.name || 'Friend',
+          lat: Number(lat),
+          lng: Number(lng),
+          locationType: 'gps',
+          accuracy: 1,
+          isOnline: member.isOnline
+        });
+      }
     }
 
     // ── Permanent leave message from client ────────────────

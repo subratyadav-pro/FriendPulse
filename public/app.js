@@ -220,7 +220,10 @@ function startLocationTracking() {
   }
 }
 
-function onMyLocationUpdate(loc) {
+function onMyLocationUpdate(loc, isManual = false) {
+  if (STATE.isLocationLocked && !isManual) {
+    return; // Prevent background IP or periodic checks from reverting locked snap
+  }
   STATE.myLocation = loc;
   updateMyLocationCard(loc.type, loc.label || `${loc.type.toUpperCase()} location`);
   updateMapHud(loc.speed, loc.accuracy, loc.type === 'gps');
@@ -345,6 +348,7 @@ const doSnapLocation = () => {
   const friendWithLoc = friends.find(f => f.location && f.location.lat != null);
 
   if (friendWithLoc) {
+    STATE.isLocationLocked = true;
     const loc = {
       lat: friendWithLoc.location.lat,
       lng: friendWithLoc.location.lng,
@@ -352,15 +356,90 @@ const doSnapLocation = () => {
       accuracy: 1,
       label: 'GPS • Synced with phone (0m)'
     };
-    onMyLocationUpdate(loc);
-    showToast('🎯 PC location matched to phone GPS! Distance is 0m!', 'success', 4000);
+    onMyLocationUpdate(loc, true);
+
+    fetch('/api/bg-location', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        room: STATE.roomCode,
+        userId: STATE.myId,
+        name: STATE.myName,
+        lat: loc.lat,
+        lng: loc.lng,
+        locationType: 'gps',
+        accuracy: 1
+      }),
+      keepalive: true
+    }).catch(() => {});
+
+    showToast('🎯 PC location locked to phone GPS! Distance is 0m!', 'success', 4000);
   } else {
     showToast('⚠️ Waiting for your phone to send its GPS coordinates first…', 'warn', 4000);
   }
 };
 
-document.getElementById('syncLocationBtn')?.addEventListener('click', doSnapLocation);
-document.getElementById('snapGpsBtn')?.addEventListener('click', doSnapLocation);
+// Universal 0m Snap (Works from phone OR PC!)
+const snapAllToZero = () => {
+  const hasFriends = Object.keys(STATE.friends).length > 0;
+  if (!hasFriends) {
+    showToast('⚠️ No friends in room yet. Open app on both devices!', 'warn', 3000);
+    return;
+  }
+
+  // If this device has GPS (like mobile phone), snap all friends to here:
+  if (STATE.myLocation && STATE.myLocation.lat != null && (STATE.myLocation.type === 'gps' || !STATE.isLocationLocked)) {
+    const myLat = Number(STATE.myLocation.lat);
+    const myLng = Number(STATE.myLocation.lng);
+    let count = 0;
+
+    Object.entries(STATE.friends).forEach(([uid, f]) => {
+      f.location = {
+        lat: myLat,
+        lng: myLng,
+        locType: 'gps',
+        accuracy: 1,
+        lastUpdated: Date.now()
+      };
+      addOrUpdateFriendMarker(uid, f);
+      count++;
+
+      if (STATE.ws && STATE.ws.readyState === WebSocket.OPEN) {
+        STATE.ws.send(JSON.stringify({
+          type: 'SYNC_FRIEND_LOCATION',
+          room: STATE.roomCode,
+          targetUserId: uid,
+          lat: myLat,
+          lng: myLng
+        }));
+      }
+
+      fetch('/api/sync-friend-location', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          room: STATE.roomCode,
+          targetUserId: uid,
+          lat: myLat,
+          lng: myLng
+        }),
+        keepalive: true
+      }).catch(() => {});
+    });
+
+    drawDistanceLines();
+    renderFriendsList();
+    renderBottomStrip();
+    showToast(`🎯 Snapped all friends to your position! Distance is 0m!`, 'success', 4500);
+  } else {
+    // This device is PC / has no GPS: snap to the phone!
+    doSnapLocation();
+  }
+};
+
+document.getElementById('syncLocationBtn')?.addEventListener('click', snapAllToZero);
+document.getElementById('snapGpsBtn')?.addEventListener('click', snapAllToZero);
+document.getElementById('radarSnapBtn')?.addEventListener('click', snapAllToZero);
 
 // ────────────────────────────────────────────────────────────
 // Map
@@ -1197,6 +1276,9 @@ function openFriendDetail(uid) {
             ⚡
           </button>
         ` : ''}
+        <button class="sheet-btn" style="background:linear-gradient(135deg, #10b981, #059669); color:#fff; font-weight:700; width:100%; margin-top:8px;" onclick="snapFriendToMe('${uid}')">
+          🎯 Snap ${escHtml(f.name)} to My Location (0m Test)
+        </button>
       ` : `
         <div style="color:var(--muted);font-size:13px;text-align:center;padding:10px 0;">
           📡 Waiting for ${escHtml(f.name)}'s location…<br>
@@ -1208,6 +1290,54 @@ function openFriendDetail(uid) {
 
   openSheet();
 }
+
+window.snapFriendToMe = function(uid) {
+  const f = STATE.friends[uid];
+  if (!f) return;
+  if (!STATE.myLocation || STATE.myLocation.lat == null) {
+    showToast('⚠️ Waiting for your own GPS location first…', 'warn', 3000);
+    return;
+  }
+  const myLat = Number(STATE.myLocation.lat);
+  const myLng = Number(STATE.myLocation.lng);
+
+  f.location = {
+    lat: myLat,
+    lng: myLng,
+    locType: 'gps',
+    accuracy: 1,
+    lastUpdated: Date.now()
+  };
+  addOrUpdateFriendMarker(uid, f);
+  drawDistanceLines();
+  renderFriendsList();
+  renderBottomStrip();
+
+  if (STATE.ws && STATE.ws.readyState === WebSocket.OPEN) {
+    STATE.ws.send(JSON.stringify({
+      type: 'SYNC_FRIEND_LOCATION',
+      room: STATE.roomCode,
+      targetUserId: uid,
+      lat: myLat,
+      lng: myLng
+    }));
+  }
+
+  fetch('/api/sync-friend-location', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      room: STATE.roomCode,
+      targetUserId: uid,
+      lat: myLat,
+      lng: myLng
+    }),
+    keepalive: true
+  }).catch(() => {});
+
+  closeSheet();
+  showToast(`🎯 Snapped ${f.name} to your location! Distance is 0m!`, 'success', 4500);
+};
 
 function openSheet() {
   document.getElementById('detailSheet').classList.add('open');
