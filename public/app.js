@@ -1380,6 +1380,121 @@ function escHtml(s) {
 // ────────────────────────────────────────────────────────────
 // Onboarding — enter the app
 // ────────────────────────────────────────────────────────────
+// ── Web Background Geolocation Engine ──────────────────────
+let bgWakeLock = null;
+let bgAudio = null;
+let bgInterval = null;
+
+async function requestWakeLock() {
+  if ('wakeLock' in navigator) {
+    try {
+      bgWakeLock = await navigator.wakeLock.request('screen');
+      bgWakeLock.addEventListener('release', () => { bgWakeLock = null; });
+    } catch (_) {}
+  }
+}
+
+function enableSilentAudioKeepalive() {
+  if (!bgAudio) {
+    // 1-second silent WAV base64 to keep media session active on mobile OS
+    bgAudio = document.createElement('audio');
+    bgAudio.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAP//';
+    bgAudio.loop = true;
+    bgAudio.volume = 0.01;
+    bgAudio.setAttribute('playsinline', '');
+    bgAudio.setAttribute('webkit-playsinline', '');
+    document.body.appendChild(bgAudio);
+  }
+  bgAudio.play().catch(() => {});
+}
+
+function startBackgroundLocationEngine() {
+  requestWakeLock();
+  enableSilentAudioKeepalive();
+
+  // Register PWA service worker
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+
+  // Periodic background ping: runs every 4 seconds to guarantee updates even when tab is backgrounded
+  if (bgInterval) clearInterval(bgInterval);
+  bgInterval = setInterval(() => {
+    if (!STATE.roomCode || !STATE.myId) return;
+
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const lat = pos.coords.latitude;
+          const lng = pos.coords.longitude;
+          const accuracy = Math.round(pos.coords.accuracy);
+          const speed = pos.coords.speed;
+
+          if (document.visibilityState === 'visible') {
+            onMyLocationUpdate({
+              lat, lng,
+              type: 'gps',
+              accuracy,
+              speed,
+              label: `GPS • ±${accuracy}m accuracy`
+            });
+          } else {
+            // Document is in background / screen locked:
+            // Send directly via HTTP keepalive to /api/bg-location to ensure server gets coordinates even if WS is suspended
+            fetch('/api/bg-location', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                room: STATE.roomCode,
+                userId: STATE.myId,
+                name: STATE.myName,
+                lat, lng,
+                locationType: 'gps',
+                accuracy
+              }),
+              keepalive: true
+            }).catch(() => {});
+
+            // Also send over WS if still open
+            if (STATE.ws && STATE.ws.readyState === WebSocket.OPEN) {
+              STATE.ws.send(JSON.stringify({
+                type: 'location',
+                room: STATE.roomCode,
+                userId: STATE.myId,
+                name: STATE.myName,
+                lat, lng,
+                locationType: 'gps',
+                accuracy,
+                isBackground: true
+              }));
+            }
+          }
+        },
+        () => {},
+        { enableHighAccuracy: true, timeout: 5000, maximumAge: 4000 }
+      );
+    }
+  }, 4000);
+}
+
+function stopBackgroundLocationEngine() {
+  if (bgInterval) { clearInterval(bgInterval); bgInterval = null; }
+  if (bgAudio) { bgAudio.pause(); }
+  if (bgWakeLock) { bgWakeLock.release().catch(() => {}); bgWakeLock = null; }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    requestWakeLock();
+    enableSilentAudioKeepalive();
+    const bgPill = document.getElementById('hudBgText');
+    if (bgPill) bgPill.textContent = 'Live Bg Active';
+  } else {
+    const bgPill = document.getElementById('hudBgText');
+    if (bgPill) bgPill.textContent = 'Tracking in Bg';
+  }
+});
+
 function enterApp(roomCode, myName) {
   let savedId = null;
   try { savedId = localStorage.getItem('friendpulse_uid'); } catch (e) {}
@@ -1413,6 +1528,9 @@ function enterApp(roomCode, myName) {
 
   // Start location tracking
   startLocationTracking();
+
+  // Start background location engine (wake lock, keepalive audio, periodic beacon)
+  startBackgroundLocationEngine();
 
   // Connect WebSocket
   connectWs(roomCode, STATE.myId, myName);
@@ -1519,6 +1637,7 @@ function closeLeaveModal() {
 function leaveTemporarily() {
   // Save last known location before closing
   sendLastLocationBeacon();
+  stopBackgroundLocationEngine();
   if (STATE.ws) {
     try { STATE.ws.close(); } catch {}
   }
@@ -1538,6 +1657,8 @@ function leaveTemporarily() {
 function leavePermanently() {
   const code = STATE.roomCode;
   const uid = STATE.myId;
+
+  stopBackgroundLocationEngine();
 
   // 1. Notify peers via WebSocket
   if (STATE.ws && STATE.ws.readyState === WebSocket.OPEN) {

@@ -1,0 +1,18 @@
+{
+  "name": "FriendPulse — Live Radar",
+  "short_name": "FriendPulse",
+  "description": "Real-time live location radar for you and your friends.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1120",
+  "theme_color": "#0b1120",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='46' fill='%236366f1'/><circle cx='50' cy='50' r='20' fill='none' stroke='white' stroke-width='6'/><circle cx='50' cy='50' r='7' fill='white'/></svg>",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
