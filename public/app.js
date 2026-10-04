@@ -1318,19 +1318,19 @@ function triggerSOS() {
     sent = true;
   }
 
-  // Fallback: always send via HTTP beacon so it works even if WS is closed/paused
-  fetch('/api/sos', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(sosPayload),
-    keepalive: true
-  }).then(r => r.json()).then(d => {
-    if (!sent) {
+  // Fallback ONLY: use HTTP if WS is not available
+  if (!sent) {
+    fetch('/api/sos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sosPayload),
+      keepalive: true
+    }).then(r => r.json()).then(() => {
       showToast('🚨 SOS sent via network fallback!', 'error', 5000);
-    }
-  }).catch(() => {
-    if (!sent) showToast('⚠️ SOS failed — no connection. Call 112 directly!', 'error', 6000);
-  });
+    }).catch(() => {
+      showToast('⚠️ SOS failed — no connection. Call 112 directly!', 'error', 6000);
+    });
+  }
 
   // Haptic feedback on mobile
   if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 400]);
