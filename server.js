@@ -2,6 +2,7 @@
 
 const http    = require('http');
 const express = require('express');
+const fs      = require('fs');
 const { WebSocketServer, WebSocket } = require('ws');
 const path    = require('path');
 const https   = require('https');
@@ -27,7 +28,7 @@ try {
 // pushSubscriptions[roomCode] = { [userId]: { subscription, name, updatedAt } }
 const pushSubscriptions = {};
 
-app.use(express.json());
+app.use(express.json({ limit: '12mb' }));
 app.use(express.static(path.join(__dirname, 'public'), {
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('.html') || filePath.endsWith('.js') || filePath.endsWith('.css')) {
@@ -374,6 +375,68 @@ app.post('/api/sos', (req, res) => {
   sendSosPushNotifications(roomCode, userId, sosPayload);
 
   res.json({ ok: true, broadcast: true, push: true });
+});
+
+// ─── SOS Evidence Photos ───────────────────────────────────
+// Sender's phone auto-captures front/back camera photos right after an SOS.
+const SOS_UPLOAD_DIR = path.join(__dirname, 'sos-uploads');
+try { fs.mkdirSync(SOS_UPLOAD_DIR, { recursive: true }); } catch (_) {}
+// sosPhotos[room] = [{ photoUrl, userId, name, camera, lat, lng, timestamp }]
+const sosPhotos = {};
+
+app.use('/sos-photos', express.static(SOS_UPLOAD_DIR, {
+  setHeaders: res => { res.setHeader('Cache-Control', 'public, max-age=86400'); }
+}));
+
+// Upload one evidence photo (base64 data URL) and broadcast it to the room
+app.post('/api/sos-photo', (req, res) => {
+  const { room, userId, name, image, camera, lat, lng } = req.body || {};
+  const roomCode = String(room || '').toUpperCase().trim();
+  if (!roomCode || !userId || typeof image !== 'string') {
+    return res.status(400).json({ error: 'Missing room, userId or image' });
+  }
+  const match = /^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/.exec(image);
+  if (!match) return res.status(400).json({ error: 'Invalid image data URL' });
+  const buf = Buffer.from(match[2], 'base64');
+  if (buf.length < 100) return res.status(400).json({ error: 'Image data too small' });
+  if (buf.length > 5 * 1024 * 1024) return res.status(413).json({ error: 'Image too large' });
+
+  const ext = match[1] === 'png' ? 'png' : (match[1] === 'webp' ? 'webp' : 'jpg');
+  const safeRoom = roomCode.replace(/[^A-Z0-9-]/g, '').slice(0, 24) || 'ROOM';
+  const fileName = `sos-${safeRoom}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`;
+
+  fs.writeFile(path.join(SOS_UPLOAD_DIR, fileName), buf, err => {
+    if (err) {
+      console.warn('[SOS-PHOTO] Write failed:', err.message);
+      return res.status(500).json({ error: 'Failed to store photo' });
+    }
+    const photoUrl = `/sos-photos/${fileName}`;
+    const record = {
+      type: 'SOS_PHOTO',
+      photoUrl,
+      userId,
+      name: name || rooms[roomCode]?.[userId]?.data?.name || 'Friend',
+      camera: camera === 'back' ? 'back' : 'front',
+      lat: lat != null ? Number(lat) : null,
+      lng: lng != null ? Number(lng) : null,
+      timestamp: Date.now()
+    };
+    if (!sosPhotos[roomCode]) sosPhotos[roomCode] = [];
+    sosPhotos[roomCode].push(record);
+    if (sosPhotos[roomCode].length > 20) sosPhotos[roomCode].shift();
+
+    broadcastToRoom(roomCode, userId, record);
+    console.log(`[SOS-PHOTO] ${record.name} (${record.camera}) → room ${roomCode} (${buf.length} bytes)`);
+    res.json({ ok: true, photoUrl });
+  });
+});
+
+// Recent evidence photos for a room — lets a phone that was closed when the
+// SOS fired fetch the photos when it opens via the SOS notification.
+app.get('/api/sos-photos', (req, res) => {
+  const roomCode = String(req.query.room || '').toUpperCase().trim();
+  if (!roomCode) return res.status(400).json({ error: 'Missing room' });
+  res.json({ photos: (sosPhotos[roomCode] || []).slice(-10) });
 });
 
 // Explicit permanent leave endpoint (erases user from room)

@@ -1,6 +1,7 @@
 node_modules/
 *.apk
 !public/FriendPulse.apk
+sos-uploads/
 cloudflared.exe
 FriendPulseApp/
 android/

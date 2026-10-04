@@ -31,6 +31,7 @@ const STATE = {
   wsReconnectTimer: null,
   wsReconnectAttempts: 0,
   locationBroadcastInterval: null,
+  sosPhotos: {},        // userId → [{ photoUrl, camera, timestamp, ... }]
 };
 
 // ── Native Android GPS Bridge (from FriendPulse Native App WebView) ──
@@ -1134,6 +1135,16 @@ function handleServerMessage(msg) {
       logSosActivity(msg);
       break;
 
+    case 'SOS_PHOTO': {
+      if (!STATE.sosPhotos[msg.userId]) STATE.sosPhotos[msg.userId] = [];
+      if (!STATE.sosPhotos[msg.userId].some(p => p.photoUrl === msg.photoUrl)) {
+        STATE.sosPhotos[msg.userId].push(msg);
+        addSosPhotoToAlert(msg);
+        showToast(`📸 ${msg.name || 'Friend'} sent an evidence photo`, 'info', 3000);
+      }
+      break;
+    }
+
     case 'ping':
     case 'PING_YOU':
       if (STATE.ws?.readyState === WebSocket.OPEN) {
@@ -1680,6 +1691,79 @@ function triggerSOS() {
   logSosActivity({ name: STATE.myName, lat: loc.lat, lng: loc.lng, timestamp: Date.now(), self: true });
   document.getElementById('sosPanicBtn').querySelector('#sosBtnText').textContent = 'SOS';
   document.getElementById('sosPanicBtn').classList.remove('held');
+
+  // Auto-capture evidence photos (front then back camera) and send to friends
+  captureSosEvidencePhotos(loc);
+}
+
+// ─── SOS Evidence Photos (auto front + back camera capture) ───
+async function captureSosEvidencePhotos(loc) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+  const cameras = [
+    { camera: 'front', facingMode: 'user' },
+    { camera: 'back', facingMode: 'environment' }
+  ];
+  for (const c of cameras) {
+    try {
+      const dataUrl = await captureSinglePhoto(c.facingMode);
+      if (dataUrl) await uploadSosPhoto(dataUrl, c.camera, loc);
+    } catch (e) {
+      console.warn(`[SOS-PHOTO] ${c.camera} camera capture failed:`, e.message);
+    }
+  }
+}
+
+async function captureSinglePhoto(facingMode) {
+  let stream = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: facingMode },
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      },
+      audio: false
+    });
+    const video = document.createElement('video');
+    video.srcObject = stream;
+    video.muted = true;
+    video.playsInline = true;
+    await video.play();
+    // Give auto-exposure/focus a moment to settle before grabbing the frame
+    await new Promise(r => setTimeout(r, 600));
+    const w = video.videoWidth || 1280;
+    const h = video.videoHeight || 720;
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext('2d').drawImage(video, 0, 0, w, h);
+    return canvas.toDataURL('image/jpeg', 0.7);
+  } finally {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+  }
+}
+
+async function uploadSosPhoto(dataUrl, camera, loc) {
+  try {
+    const res = await fetch('/api/sos-photo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        room: STATE.roomCode,
+        userId: STATE.myId,
+        name: STATE.myName,
+        image: dataUrl,
+        camera,
+        lat: loc?.lat ?? null,
+        lng: loc?.lng ?? null
+      })
+    });
+    if (res.ok) {
+      showToast(`📸 ${camera === 'front' ? 'Front' : 'Back'} camera photo sent to friends`, 'success', 3000);
+    }
+  } catch (e) {
+    console.warn('[SOS-PHOTO] upload failed:', e.message);
+  }
 }
 
 // ─── Emergency Siren Dual-Engine Audio System ─────────────
@@ -1922,6 +2006,22 @@ function showSosAlert(msg) {
     }
   }
 
+  // Render any evidence photos already received from this sender
+  const photosWrap = document.getElementById('sosAlertPhotos');
+  if (photosWrap) {
+    photosWrap.innerHTML = '';
+    photosWrap.classList.add('hidden');
+    const photos = (STATE.sosPhotos[msg.userId] || []).slice();
+    if (photos.length) {
+      photosWrap.classList.remove('hidden');
+      const label = document.createElement('div');
+      label.className = 'sos-photos-label';
+      label.textContent = `📸 EVIDENCE PHOTOS (${photos.length})`;
+      photosWrap.appendChild(label);
+      photos.forEach(p => appendSosPhotoThumb(photosWrap, p));
+    }
+  }
+
   // Button 1: Google Maps directions
   const navBtn = document.getElementById('sosAlertNavigateBtn');
   if (navBtn) {
@@ -1963,6 +2063,54 @@ function showSosAlert(msg) {
   if (lat && lng && STATE.map) {
     STATE.map.setView([lat, lng], 16, { animate: true });
   }
+}
+
+// ─── SOS evidence photo rendering ──────────────────────────
+function appendSosPhotoThumb(container, photo) {
+  const img = document.createElement('img');
+  img.src = photo.photoUrl;
+  img.className = 'sos-photo-thumb';
+  img.alt = `SOS evidence (${photo.camera} camera)`;
+  img.title = `${photo.camera === 'front' ? 'Front' : 'Back'} camera · ${new Date(photo.timestamp).toLocaleTimeString()}`;
+  img.onclick = () => window.open(photo.photoUrl, '_blank');
+  container.appendChild(img);
+}
+
+function addSosPhotoToAlert(photo) {
+  const photosWrap = document.getElementById('sosAlertPhotos');
+  if (!photosWrap) return;
+  // Only show in the overlay when the alert is currently visible
+  const overlay = document.getElementById('sosAlertOverlay');
+  if (!overlay || overlay.classList.contains('hidden')) return;
+
+  photosWrap.classList.remove('hidden');
+  let label = photosWrap.querySelector('.sos-photos-label');
+  if (!label) {
+    label = document.createElement('div');
+    label.className = 'sos-photos-label';
+    label.textContent = '📸 EVIDENCE PHOTOS';
+    photosWrap.appendChild(label);
+  }
+  const count = photosWrap.querySelectorAll('.sos-photo-thumb').length + 1;
+  label.textContent = `📸 EVIDENCE PHOTOS (${count})`;
+  appendSosPhotoThumb(photosWrap, photo);
+}
+
+// Fetch photos that were broadcast while this phone was closed (opened via
+// the SOS notification deep link) and merge them into the alert view.
+function fetchSosPhotosForDeepLink(roomCode, senderName) {
+  fetch(`/api/sos-photos?room=${encodeURIComponent(roomCode)}`)
+    .then(r => r.json())
+    .then(({ photos }) => {
+      (photos || []).filter(p => p.name === senderName).forEach(p => {
+        if (!STATE.sosPhotos[p.userId]) STATE.sosPhotos[p.userId] = [];
+        if (!STATE.sosPhotos[p.userId].some(x => x.photoUrl === p.photoUrl)) {
+          STATE.sosPhotos[p.userId].push(p);
+          addSosPhotoToAlert(p);
+        }
+      });
+    })
+    .catch(() => {});
 }
 
 function logSosActivity(msg) {
@@ -2632,6 +2780,9 @@ function leavePermanently() {
         lng: !isNaN(sosLng) ? sosLng : null,
         timestamp: Date.now()
       });
+      // Pull in any evidence photos captured by the sender (we may have
+      // been closed when they were broadcast)
+      fetchSosPhotosForDeepLink(roomParam || STATE.roomCode || '', sosName);
     }, 1000);
   }
 });

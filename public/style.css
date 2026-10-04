@@ -880,6 +880,35 @@ a { text-decoration: none; }
   color: var(--muted); font-size: 14px; padding: 8px;
 }
 
+/* ── SOS Evidence Photos ──── */
+.sos-alert-photos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin: 10px 0 14px;
+  width: 100%;
+}
+.sos-alert-photos.hidden { display: none; }
+.sos-photos-label {
+  width: 100%;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: #fca5a5;
+}
+.sos-photo-thumb {
+  width: 92px;
+  height: 92px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 2px solid rgba(239, 68, 68, 0.5);
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+.sos-photo-thumb:active { transform: scale(0.95); }
+
 /* ── Emergency Alerts Permission Banner ──── */
 .notif-banner {
   background: linear-gradient(135deg, rgba(239, 68, 68, 0.18), rgba(99, 102, 241, 0.2));
