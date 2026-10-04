@@ -803,38 +803,96 @@ a { text-decoration: none; }
 .sheet-btn-ghost { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: white; flex: 0 0 48px; }
 
 /* ── SOS Alert Overlay ──────── */
+/* ── SOS Alert Overlay ──────── */
 .sos-alert-overlay {
   position: fixed; inset: 0; z-index: 9999;
-  background: rgba(0,0,0,0.85);
+  background: rgba(185, 28, 28, 0.4);
   display: flex; align-items: center; justify-content: center;
-  padding: 28px;
-  animation: fadeIn 0.3s;
+  padding: 24px;
+  animation: sosStrobe 0.8s infinite;
 }
-@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sosStrobe {
+  0%, 100% { background: rgba(185, 28, 28, 0.55); backdrop-filter: blur(8px); }
+  50% { background: rgba(0, 0, 0, 0.92); backdrop-filter: blur(4px); }
+}
 .sos-alert-overlay.hidden { display: none; }
 
 .sos-alert-box {
-  background: #1a0a0a;
-  border: 2px solid var(--red);
-  border-radius: 24px;
-  padding: 32px 24px;
+  background: #180808;
+  border: 2px solid #ef4444;
+  border-radius: 26px;
+  padding: 28px 22px;
   text-align: center;
-  max-width: 340px; width: 100%;
-  box-shadow: 0 0 60px rgba(239,68,68,0.5);
+  max-width: 360px; width: 100%;
+  box-shadow: 0 0 80px rgba(239, 68, 68, 0.7);
+  animation: shake 0.6s infinite;
 }
-.sos-alert-emoji { font-size: 52px; animation: shake 0.5s infinite; }
+.sos-alert-emoji { font-size: 52px; margin-bottom: 6px; }
 @keyframes shake {
-  0%,100% { transform: rotate(0deg); }
-  25% { transform: rotate(-5deg); }
-  75% { transform: rotate(5deg); }
+  0%, 100% { transform: rotate(0deg) scale(1); }
+  25% { transform: rotate(-3deg) scale(1.02); }
+  75% { transform: rotate(3deg) scale(1.02); }
 }
-.sos-alert-box h2 { font-size: 22px; font-weight: 900; color: var(--red); margin: 12px 0 8px; letter-spacing: 1px; }
-.sos-alert-box p { color: var(--muted); font-size: 14px; margin-bottom: 20px; line-height: 1.6; }
+.sos-siren-badge {
+  display: inline-block;
+  background: rgba(239, 68, 68, 0.25);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  padding: 4px 12px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+  animation: pulse 0.8s infinite alternate;
+}
+.sos-alert-coords {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-family: monospace;
+  font-size: 12px;
+  color: #fecaca;
+  margin: 10px 0 16px;
+  word-break: break-all;
+}
+.sos-alert-box h2 { font-size: 22px; font-weight: 900; color: #ef4444; margin: 6px 0 6px; letter-spacing: 1px; }
+.sos-alert-box p { color: #e2e8f0; font-size: 14px; margin-bottom: 8px; line-height: 1.5; font-weight: 500; }
 .btn-dismiss {
   width: 100%; margin-top: 10px;
   background: transparent; border: none;
   color: var(--muted); font-size: 14px; padding: 8px;
 }
+
+/* ── Emergency Alerts Permission Banner ──── */
+.notif-banner {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.18), rgba(99, 102, 241, 0.2));
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: 14px;
+  padding: 10px 14px;
+  margin: 10px 14px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: #f1f5f9;
+  animation: fadeIn 0.3s;
+}
+.notif-banner button {
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  color: #fff;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.4);
+}
+.notif-banner.hidden { display: none !important; }
 
 /* ── Leaflet custom markers ──── */
 .my-marker {

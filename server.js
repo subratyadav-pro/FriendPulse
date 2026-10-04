@@ -6,10 +6,26 @@ const { WebSocketServer, WebSocket } = require('ws');
 const path    = require('path');
 const https   = require('https');
 const lt      = require('localtunnel');
+const webpush = require('web-push');
 
 const app    = express();
 const server = http.createServer(app);
 const wss    = new WebSocketServer({ server });
+
+// ─── Web Push / VAPID Configuration ────────────────────────
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || 'BP6E5qYE2ElmEasJ11gvp-8iG-hOb7uxjQMIpas8_xj4nSb2Ez1R8TG6mrqqexxCwQxmuY4g4Lr3yHIkKI16un8';
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || 'Q620f6OCgYUZTmCT4k_hcavGVk3bSXKsyVmWIifpgWc';
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:admin@friendpulse.app';
+
+try {
+  webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+  console.log('[PUSH] Web Push VAPID initialized successfully');
+} catch (err) {
+  console.warn('[PUSH] VAPID init error:', err.message);
+}
+
+// pushSubscriptions[roomCode] = { [userId]: { subscription, name, updatedAt } }
+const pushSubscriptions = {};
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -17,6 +33,48 @@ app.use(express.static(path.join(__dirname, 'public')));
 // ─── In-memory room store ──────────────────────────────────
 // rooms[code] = { [userId]: { ws, data } }
 const rooms = {};
+
+function sendSosPushNotifications(roomCode, senderUserId, sosData) {
+  const roomCodeNorm = String(roomCode).toUpperCase().trim();
+  const subs = pushSubscriptions[roomCodeNorm];
+  if (!subs) return;
+
+  const senderName = sosData.name || rooms[roomCodeNorm]?.[senderUserId]?.data?.name || 'A friend';
+  const lat = sosData.lat != null ? Number(sosData.lat) : null;
+  const lng = sosData.lng != null ? Number(sosData.lng) : null;
+
+  const payload = JSON.stringify({
+    type: 'SOS_ALERT',
+    title: `🚨 EMERGENCY SOS: ${senderName}!`,
+    body: `${senderName} pressed SOS! Tap to view live location & rescue.`,
+    name: senderName,
+    room: roomCodeNorm,
+    lat,
+    lng,
+    locType: sosData.locType || 'gps',
+    timestamp: sosData.timestamp || Date.now()
+  });
+
+  const options = {
+    urgency: 'high',
+    TTL: 3600 // 1 hour validity
+  };
+
+  const recipientIds = Object.keys(subs).filter(uid => uid !== senderUserId);
+  console.log(`[PUSH-DISPATCH] Sending SOS Web Push to ${recipientIds.length} members in room ${roomCodeNorm}`);
+
+  recipientIds.forEach(targetId => {
+    const subRecord = subs[targetId];
+    if (!subRecord || !subRecord.subscription) return;
+
+    webpush.sendNotification(subRecord.subscription, payload, options).catch(err => {
+      console.warn(`[PUSH-FAIL] User ${targetId} push failed (${err.statusCode || err.message})`);
+      if (err.statusCode === 410 || err.statusCode === 404) {
+        delete subs[targetId];
+      }
+    });
+  });
+}
 
 function broadcastToRoom(roomCode, excludeId, message) {
   const room = rooms[roomCode];
@@ -194,6 +252,27 @@ app.post('/api/last-location', (req, res) => {
   res.json({ ok: true });
 });
 
+// ─── Web Push Subscription Endpoints ──────────────────────
+app.get('/api/vapid-public-key', (req, res) => {
+  res.json({ publicKey: VAPID_PUBLIC_KEY });
+});
+
+app.post('/api/push-subscribe', (req, res) => {
+  const { room, userId, subscription, name } = req.body || {};
+  if (!room || !userId || !subscription) {
+    return res.status(400).json({ error: 'Missing room, userId or subscription' });
+  }
+  const roomCode = String(room).toUpperCase().trim();
+  if (!pushSubscriptions[roomCode]) pushSubscriptions[roomCode] = {};
+  pushSubscriptions[roomCode][userId] = {
+    subscription,
+    name: name || 'Friend',
+    updatedAt: Date.now()
+  };
+  console.log(`[PUSH-REGISTER] Registered push for ${name || userId} in room ${roomCode}`);
+  res.json({ ok: true });
+});
+
 // HTTP SOS fallback — works even if client's WS is closed/paused
 app.post('/api/sos', (req, res) => {
   const { room, userId, name, lat, lng, locType, timestamp } = req.body || {};
@@ -203,8 +282,7 @@ app.post('/api/sos', (req, res) => {
 
   console.log(`[SOS-HTTP] ${senderName} in room ${roomCode} → ${lat}, ${lng}`);
 
-  // Broadcast to all other room members via server WS
-  broadcastToRoom(roomCode, userId, {
+  const sosPayload = {
     type: 'SOS_ALERT',
     userId,
     name: senderName,
@@ -212,9 +290,15 @@ app.post('/api/sos', (req, res) => {
     lng: lng ? Number(lng) : null,
     locType: locType || 'gps',
     timestamp: timestamp || Date.now()
-  });
+  };
 
-  res.json({ ok: true, broadcast: true });
+  // 1. Broadcast to all active WebSocket connections in room
+  broadcastToRoom(roomCode, userId, sosPayload);
+
+  // 2. Dispatch high-urgency Web Push to ring phones even if browser/app is closed!
+  sendSosPushNotifications(roomCode, userId, sosPayload);
+
+  res.json({ ok: true, broadcast: true, push: true });
 });
 
 // Explicit permanent leave endpoint (erases user from room)
@@ -347,9 +431,16 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'sos' && currentRoom && currentUserId) {
       const name = rooms[currentRoom]?.[currentUserId]?.data?.name || 'A friend';
-      broadcastToRoom(currentRoom, currentUserId, {
-        type: 'sos', userId: currentUserId, name, lat: msg.lat, lng: msg.lng, timestamp: Date.now()
-      });
+      const sosData = {
+        type: 'sos',
+        userId: currentUserId,
+        name,
+        lat: msg.lat,
+        lng: msg.lng,
+        timestamp: Date.now()
+      };
+      broadcastToRoom(currentRoom, currentUserId, sosData);
+      sendSosPushNotifications(currentRoom, currentUserId, sosData);
     }
 
     if (msg.type === 'ping' && currentRoom) {
@@ -410,9 +501,16 @@ wss.on('connection', (ws) => {
     }
     if (msg.type === 'SOS' && currentRoom && currentUserId) {
       const name = rooms[currentRoom]?.[currentUserId]?.data?.name || 'A friend';
-      broadcastToRoom(currentRoom, currentUserId, {
-        type: 'SOS_ALERT', userId: currentUserId, name, lat: msg.lat, lng: msg.lng, timestamp: Date.now()
-      });
+      const sosData = {
+        type: 'SOS_ALERT',
+        userId: currentUserId,
+        name,
+        lat: msg.lat,
+        lng: msg.lng,
+        timestamp: Date.now()
+      };
+      broadcastToRoom(currentRoom, currentUserId, sosData);
+      sendSosPushNotifications(currentRoom, currentUserId, sosData);
     }
     if (msg.type === 'PING_REQUEST' && currentRoom) {
       const room = rooms[currentRoom];

@@ -89,6 +89,15 @@
     </button>
   </header>
 
+  <!-- Emergency Alerts Notification Permission Banner -->
+  <div id="notifPermissionBanner" class="notif-banner hidden">
+    <div style="display:flex;align-items:center;gap:8px;">
+      <span style="font-size:18px;">🔔</span>
+      <span><strong>Enable Emergency Ringing:</strong> Allow alerts to ring your phone even if app is closed.</span>
+    </div>
+    <button id="btnEnableNotifs">Enable Alerts</button>
+  </div>
+
   <!-- Tab 1: Map -->
   <div id="tab-map" class="tab-panel active">
     <div id="map"></div>
@@ -311,10 +320,13 @@
   <div id="sosAlertOverlay" class="sos-alert-overlay hidden">
     <div class="sos-alert-box">
       <div class="sos-alert-emoji">🚨</div>
+      <div id="sosSirenBadge" class="sos-siren-badge">🔊 EMERGENCY SIREN RINGING</div>
       <h2>EMERGENCY SOS</h2>
       <p id="sosAlertText">A friend is in danger!</p>
-      <button id="sosAlertNavigateBtn" class="btn-primary">Open Location in Maps</button>
-      <button id="sosAlertDismissBtn" class="btn-dismiss">Dismiss</button>
+      <div id="sosAlertCoords" class="sos-alert-coords">📍 Location: Detecting...</div>
+      <button id="sosAlertNavigateBtn" class="btn-primary" style="margin-bottom: 8px;">🗺️ Open in Google Maps</button>
+      <button id="sosAlertTrackBtn" class="btn-primary" style="background: linear-gradient(135deg, #ef4444, #b91c1c); margin-bottom: 8px;">🎯 Center on Friend Radar</button>
+      <button id="sosAlertDismissBtn" class="btn-dismiss" style="margin-top: 6px;">🔕 Stop Siren & Dismiss</button>
     </div>
   </div>
 

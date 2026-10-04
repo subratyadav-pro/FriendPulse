@@ -1341,18 +1341,151 @@ function triggerSOS() {
   document.getElementById('sosPanicBtn').classList.remove('held');
 }
 
+// ─── Emergency Siren & Audio System ───────────────────────
+let sosSirenAudioContext = null;
+let sosSirenOscillator = null;
+let sosSirenGain = null;
+let sosSirenInterval = null;
+let isSirenPlaying = false;
+
+function startEmergencySiren() {
+  if (isSirenPlaying) return;
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    sosSirenAudioContext = new AudioContextClass();
+    if (sosSirenAudioContext.state === 'suspended') {
+      sosSirenAudioContext.resume();
+    }
+
+    const osc = sosSirenAudioContext.createOscillator();
+    const gain = sosSirenAudioContext.createGain();
+
+    // Dual-tone emergency siren sweep (police/ambulance style alarm)
+    osc.type = 'sawtooth';
+    gain.gain.setValueAtTime(0.4, sosSirenAudioContext.currentTime);
+
+    let high = false;
+    const updatePitch = () => {
+      if (!isSirenPlaying || !sosSirenAudioContext || !osc) return;
+      try {
+        const t = sosSirenAudioContext.currentTime;
+        const targetFreq = high ? 700 : 1300;
+        osc.frequency.linearRampToValueAtTime(targetFreq, t + 0.35);
+        high = !high;
+      } catch (_) {}
+    };
+
+    osc.frequency.setValueAtTime(800, sosSirenAudioContext.currentTime);
+    osc.connect(gain);
+    gain.connect(sosSirenAudioContext.destination);
+    osc.start();
+
+    sosSirenOscillator = osc;
+    sosSirenGain = gain;
+    isSirenPlaying = true;
+    sosSirenInterval = setInterval(updatePitch, 380);
+
+    // Continuous mobile emergency vibration
+    if (navigator.vibrate) {
+      navigator.vibrate([500, 200, 500, 200, 1000, 300, 1000, 300, 1000]);
+    }
+    console.log('[SIREN] Emergency siren ringing activated');
+  } catch (err) {
+    console.warn('[SIREN] Siren audio error:', err);
+  }
+}
+
+function stopEmergencySiren() {
+  if (!isSirenPlaying) return;
+  try {
+    if (sosSirenInterval) {
+      clearInterval(sosSirenInterval);
+      sosSirenInterval = null;
+    }
+    if (sosSirenOscillator) {
+      sosSirenOscillator.stop();
+      sosSirenOscillator.disconnect();
+    }
+    if (sosSirenGain) {
+      sosSirenGain.disconnect();
+    }
+    if (sosSirenAudioContext) {
+      sosSirenAudioContext.close();
+    }
+  } catch (_) {}
+  isSirenPlaying = false;
+  sosSirenAudioContext = null;
+  sosSirenOscillator = null;
+  sosSirenGain = null;
+  if (navigator.vibrate) {
+    navigator.vibrate(0);
+  }
+  console.log('[SIREN] Emergency siren stopped');
+}
+
 function showSosAlert(msg) {
+  startEmergencySiren();
+
   const overlay = document.getElementById('sosAlertOverlay');
   const text = document.getElementById('sosAlertText');
-  text.textContent = `${msg.name} is in danger and needs help! Their location has been shared.`;
+  const coordsEl = document.getElementById('sosAlertCoords');
+
+  const senderName = msg.name || 'Friend';
+  text.textContent = `${senderName} is in DANGER and needs immediate help!`;
+
+  const lat = msg.lat != null ? Number(msg.lat) : null;
+  const lng = msg.lng != null ? Number(msg.lng) : null;
+
+  if (coordsEl) {
+    if (lat && lng) {
+      coordsEl.textContent = `📍 GPS: ${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    } else {
+      coordsEl.textContent = '📍 Location: GPS signal being acquired...';
+    }
+  }
+
+  // Button 1: Google Maps directions
+  const navBtn = document.getElementById('sosAlertNavigateBtn');
+  if (navBtn) {
+    navBtn.onclick = () => {
+      if (lat && lng) {
+        window.open(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`, '_blank');
+      } else {
+        showToast('Waiting for friend coordinates...', 'warn');
+      }
+    };
+  }
+
+  // Button 2: Center on radar map
+  const trackBtn = document.getElementById('sosAlertTrackBtn');
+  if (trackBtn) {
+    trackBtn.onclick = () => {
+      overlay.classList.add('hidden');
+      stopEmergencySiren();
+      if (lat && lng && STATE.map) {
+        STATE.map.setView([lat, lng], 17, { animate: true });
+        const mapTabBtn = document.querySelector('[data-tab="tab-map"]');
+        if (mapTabBtn) mapTabBtn.click();
+      }
+    };
+  }
+
+  // Button 3: Dismiss & Stop Siren
+  const dismissBtn = document.getElementById('sosAlertDismissBtn');
+  if (dismissBtn) {
+    dismissBtn.onclick = () => {
+      overlay.classList.add('hidden');
+      stopEmergencySiren();
+    };
+  }
+
   overlay.classList.remove('hidden');
 
-  document.getElementById('sosAlertNavigateBtn').onclick = () => {
-    navigateTo(msg.lat, msg.lng);
-  };
-  document.getElementById('sosAlertDismissBtn').onclick = () => {
-    overlay.classList.add('hidden');
-  };
+  // Center map on sender in background
+  if (lat && lng && STATE.map) {
+    STATE.map.setView([lat, lng], 16, { animate: true });
+  }
 }
 
 function logSosActivity(msg) {
@@ -1631,6 +1764,9 @@ function enterApp(roomCode, myName) {
   // Connect WebSocket
   connectWs(roomCode, STATE.myId, myName);
 
+  // Register Web Push notifications so phone rings even when app is closed!
+  registerPushNotifications(roomCode, STATE.myId, myName);
+
   // Fetch public tunnel URL for sharing (async, non-blocking)
   fetchPublicUrl();
 
@@ -1639,6 +1775,102 @@ function enterApp(roomCode, myName) {
   if (!params.has('room')) {
     history.replaceState(null, '', `?room=${roomCode}`);
   }
+}
+
+// ─── Web Push Notifications (Phone ringing even when closed) ───
+function urlB64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+async function registerPushNotifications(roomCode, userId, name) {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    console.log('[PUSH] Web Push not supported by this browser');
+    return;
+  }
+
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    if (!reg) return;
+
+    if (Notification.permission === 'granted') {
+      await subscribeUserToPush(reg, roomCode, userId, name);
+    } else {
+      setupNotificationBanner(reg, roomCode, userId, name);
+    }
+  } catch (err) {
+    console.warn('[PUSH] registerPushNotifications error:', err);
+  }
+}
+
+async function subscribeUserToPush(reg, roomCode, userId, name) {
+  try {
+    const res = await fetch('/api/vapid-public-key');
+    const { publicKey } = await res.json();
+    if (!publicKey) return;
+
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlB64ToUint8Array(publicKey)
+      });
+    }
+
+    await fetch('/api/push-subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        room: roomCode,
+        userId,
+        name,
+        subscription: sub
+      })
+    });
+    console.log('[PUSH] Successfully subscribed & registered with server for room', roomCode);
+
+    const banner = document.getElementById('notifPermissionBanner');
+    if (banner) banner.classList.add('hidden');
+  } catch (err) {
+    console.warn('[PUSH] subscribeUserToPush error:', err);
+  }
+}
+
+function setupNotificationBanner(reg, roomCode, userId, name) {
+  const banner = document.getElementById('notifPermissionBanner');
+  const btn = document.getElementById('btnEnableNotifs');
+  if (!banner || !btn) return;
+
+  if (Notification.permission === 'granted') {
+    banner.classList.add('hidden');
+    return;
+  }
+
+  // Show banner asking user to enable ringing emergency alerts
+  banner.classList.remove('hidden');
+  btn.onclick = async () => {
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm === 'granted') {
+        showToast('🔔 Emergency SOS ringing enabled!', 'success');
+        banner.classList.add('hidden');
+        if (reg) {
+          await subscribeUserToPush(reg, roomCode, userId, name);
+        }
+      } else {
+        banner.classList.add('hidden');
+        showToast('Notifications blocked. App must remain open for alerts.', 'warn', 5000);
+      }
+    } catch (_) {
+      banner.classList.add('hidden');
+    }
+  };
 }
 
 // ────────────────────────────────────────────────────────────
@@ -1867,4 +2099,28 @@ function leavePermanently() {
 
   // Make invalidateSize work when switching back to map
   document.getElementById('tab-map').addEventListener('focus', () => STATE.map?.invalidateSize(), true);
+
+  // ── Handle incoming emergency link (from Push Notification click) ──
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get('sos') === '1') {
+    const sosLat = parseFloat(urlParams.get('lat'));
+    const sosLng = parseFloat(urlParams.get('lng'));
+    const sosName = urlParams.get('name') || 'Friend';
+    const roomParam = urlParams.get('room');
+    let mySavedName = 'Friend';
+    try { mySavedName = localStorage.getItem('friendpulse_name') || 'Friend'; } catch (_) {}
+
+    if (roomParam && !STATE.roomCode) {
+      enterApp(roomParam.toUpperCase(), mySavedName);
+    }
+
+    setTimeout(() => {
+      showSosAlert({
+        name: sosName,
+        lat: !isNaN(sosLat) ? sosLat : null,
+        lng: !isNaN(sosLng) ? sosLng : null,
+        timestamp: Date.now()
+      });
+    }, 1000);
+  }
 });
