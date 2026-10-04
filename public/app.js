@@ -28,6 +28,7 @@ const STATE = {
   sosHoldTimer: null,
   wsReconnectTimer: null,
   wsReconnectAttempts: 0,
+  locationBroadcastInterval: null,
 };
 
 // Color palette for friend avatars
@@ -705,8 +706,9 @@ function connectWs(roomCode, userId, name) {
       userData: { name, id: userId }
     }));
 
-    // Send current location immediately
-    if (STATE.myLocation) {
+    // Broadcast location helper
+    const broadcastMyLocation = () => {
+      if (!STATE.myLocation || ws.readyState !== WebSocket.OPEN) return;
       ws.send(JSON.stringify({
         type: 'location',
         room: roomCode,
@@ -716,16 +718,19 @@ function connectWs(roomCode, userId, name) {
         lng: STATE.myLocation.lng,
         locationType: STATE.myLocation.type,
         accuracy: STATE.myLocation.accuracy || null,
-        location: {
-          lat: STATE.myLocation.lat,
-          lng: STATE.myLocation.lng,
-          locType: STATE.myLocation.type,
-          accuracy: STATE.myLocation.accuracy || null,
-          city: STATE.myLocation.city || null,
-          lastUpdated: Date.now()
-        }
       }));
-    }
+    };
+
+    // Send current location immediately if available
+    broadcastMyLocation();
+
+    // Also re-broadcast after 2s and 5s to catch GPS firing after join
+    setTimeout(broadcastMyLocation, 2000);
+    setTimeout(broadcastMyLocation, 5000);
+
+    // Start periodic 8-second location broadcast to keep everyone in sync
+    if (STATE.locationBroadcastInterval) clearInterval(STATE.locationBroadcastInterval);
+    STATE.locationBroadcastInterval = setInterval(broadcastMyLocation, 8000);
   };
 
   ws.onmessage = (event) => {
@@ -789,6 +794,15 @@ function handleServerMessage(msg) {
       if (hasFriendWithLocation) {
         setTimeout(() => fitAllFriends(), 800);
       }
+      // Also re-ping all after 3s in case their GPS just fired
+      setTimeout(() => {
+        members.forEach(member => {
+          if (member.id === STATE.myId || !member.id) return;
+          if (STATE.friends[member.id]?.location?.lat == null && STATE.ws?.readyState === WebSocket.OPEN) {
+            STATE.ws.send(JSON.stringify({ type: 'ping', targetId: member.id, room: STATE.roomCode }));
+          }
+        });
+      }, 3000);
       break;
     }
 
@@ -923,17 +937,42 @@ function handleServerMessage(msg) {
 
     case 'ping':
     case 'PING_YOU':
-      if (STATE.myLocation && STATE.ws?.readyState === WebSocket.OPEN) {
-        STATE.ws.send(JSON.stringify({
-          type: 'location',
-          room: STATE.roomCode,
-          userId: STATE.myId,
-          name: STATE.myName,
-          lat: STATE.myLocation.lat,
-          lng: STATE.myLocation.lng,
-          locationType: STATE.myLocation.type,
-          accuracy: STATE.myLocation.accuracy || null,
-        }));
+      if (STATE.ws?.readyState === WebSocket.OPEN) {
+        if (STATE.myLocation) {
+          // Respond with current location immediately
+          STATE.ws.send(JSON.stringify({
+            type: 'location',
+            room: STATE.roomCode,
+            userId: STATE.myId,
+            name: STATE.myName,
+            lat: STATE.myLocation.lat,
+            lng: STATE.myLocation.lng,
+            locationType: STATE.myLocation.type,
+            accuracy: STATE.myLocation.accuracy || null,
+          }));
+        } else {
+          // No GPS yet — try to get location and then respond
+          getIPLocation().then(ipLoc => {
+            if (ipLoc) {
+              onMyLocationUpdate(ipLoc);
+            }
+          });
+          // Retry response after 2 seconds
+          setTimeout(() => {
+            if (STATE.myLocation && STATE.ws?.readyState === WebSocket.OPEN) {
+              STATE.ws.send(JSON.stringify({
+                type: 'location',
+                room: STATE.roomCode,
+                userId: STATE.myId,
+                name: STATE.myName,
+                lat: STATE.myLocation.lat,
+                lng: STATE.myLocation.lng,
+                locationType: STATE.myLocation.type,
+                accuracy: STATE.myLocation.accuracy || null,
+              }));
+            }
+          }, 2000);
+        }
       }
       break;
   }
